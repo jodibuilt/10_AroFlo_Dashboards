@@ -15,7 +15,6 @@ const SOURCE = process.env.TEST_ALL_AROFLO_DIR || path.join(HERE, '..', 'test_al
 const VERBATIM = [
   'src/logger.js',
   'src/zoneFetch.js',
-  'src/payments.js',
   'src/kpi.js',
   'src/aroflo/aroFloDates.js',
   'src/aroflo/errors.js',
@@ -47,13 +46,23 @@ const VERBATIM = [
 
 // Under a VERBATIM directory but deliberately edited here: the overdue
 // table's "Assigned" column is dropped, the report pane and theme come from
-// the app shell, and the KPI Matrix reads live AroFlo data — see README.
+// the app shell, the KPI Matrix reads live AroFlo data, priorities are named
+// from AroFlo, charts re-measure their box, tables are always striped, and
+// the client filters take several clients — see README. Files that exist
+// only here go in this list too.
 const EDITED = new Set([
   'frontend/src/reporting/types.ts',
   'frontend/src/reporting/overdueAgeing/OverdueAgeingSection.tsx',
   'frontend/src/reporting/ReportingDashboardView.tsx',
   'frontend/src/reporting/kpiMatrix/KpiMatrixSection.tsx',
   'frontend/src/reporting/kpiMatrix/ingest.ts',
+  'frontend/src/reporting/plotly.ts',
+  'frontend/src/reporting/AnalyticsTab.tsx',
+  'frontend/src/reporting/invoicing/InvoicingTab.tsx',
+  'frontend/src/reporting/components/ClientMultiSelect.tsx',
+  'frontend/src/reporting/components/RefreshControl.tsx',
+  'frontend/src/reporting/components/EditableTable.tsx',
+  'frontend/src/reporting/charts/TrendChart.tsx',
 ]);
 
 function walk(rel) {

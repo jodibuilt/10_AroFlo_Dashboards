@@ -16,6 +16,8 @@ import { buildDataset, buildDatasetFromRows, Diagnostics, KpiTaskRow } from './i
 import { computeKpis, fmtPct, KpiResult, lateJobs, reconcile } from './engine';
 import { buildKpiMatrixWorkbook } from './exportMatrix';
 import { fetchLiveKpiRows, LIVE_CLIENT_COLUMN, LiveKpiRows } from '../../services/reportingKpiMatrix';
+import { ClientMultiSelect } from '../components/ClientMultiSelect';
+import { formatCoverage } from '../../services/reportingRefresh';
 
 const CSV_KEY = 'kpi-matrix-csv';
 const NAME_KEY = 'kpi-matrix-filename';
@@ -35,7 +37,7 @@ function unmeasured(def: KpiDef): KpiResult {
     total: 0,
     ontimeCount: null,
     ontimePool: null,
-    comment: 'Not in live AroFlo data — upload a CSV export to measure',
+    comment: 'Not available from AroFlo’s API — upload a CSV export to measure',
     failCount: 0,
     ontimeFailCount: null,
     completionPct: null,
@@ -53,6 +55,7 @@ const LIVE_CAPTION =
   'present on the job, not confirmed causes of delay.';
 
 const LIVE_ASSUMPTIONS = [
+  'Tiers come from AroFlo’s own priority names: AP1–AP4 count with P1–P4, level 5 (AP5) sits in the P4 (30-day) tier, and SM counts as PM. A priority with no level in its name is left out of the tiered rows.',
   'Commenced KPIs use the first labour entry logged on the job. A job with no labour logged is not scored for commencement.',
   "Completion is judged against AroFlo's own Task Due Date, not the computed contractual SLA date. Those due dates are frequently defaulted / generous.",
   'A due date with no time is treated as due by the end of that day.',
@@ -78,9 +81,17 @@ function fmtDate(d: Date | null): string {
 interface Props {
   palette: Palette;
   striped: boolean;
+  // Changes when the server has re-read AroFlo (the page's Refresh button);
+  // the work orders are fetched again.
+  dataVersion?: number;
+  // The first day the loaded data covers (YYYY/MM/DD), if known.
+  coverageFrom?: string | null;
+  // The clients to show until someone picks: the contract's (Ventia + SAHA),
+  // which is who this SLA template is for. Empty means everyone.
+  defaultClients?: string[];
 }
 
-export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
+export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersion = 0, coverageFrom = null, defaultClients = [] }) => {
   const persisted = useMemo(loadPersisted, []);
   const [csvText, setCsvText] = useState<string | null>(persisted?.csv ?? null);
   const [fileName, setFileName] = useState<string | null>(persisted?.name ?? null);
@@ -94,7 +105,10 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
   const [reloadNonce, setReloadNonce] = useState(0);
   const [live, setLive] = useState<LiveKpiRows | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
-  const [clientFilter, setClientFilter] = useState<string>('__all__');
+  // Clients to show, live mode only. Empty means everyone; null means nobody
+  // has picked yet, so the defaults apply.
+  const [pickedClients, setClientFilter] = useState<string[] | null>(null);
+  const clientFilter = pickedClients ?? defaultClients;
   const fileRef = useRef<HTMLInputElement>(null);
 
   const isLive = !csvText;
@@ -102,10 +116,10 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
   // Re-derived on every refresh so "overdue" / invoice-maturity checks use a
   // current clock, and every downstream useMemo recomputes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const now = useMemo(() => new Date(), [reloadNonce]);
+  const now = useMemo(() => new Date(), [reloadNonce, dataVersion]);
 
-  // Live work orders, whenever no CSV is standing in for them. reloadNonce
-  // re-runs this for the Refresh button.
+  // AroFlo's work orders as the server holds them, whenever no CSV is
+  // standing in for them. Fetched again when a refresh from AroFlo finishes.
   useEffect(() => {
     if (!isLive) return;
     let stale = false;
@@ -121,14 +135,27 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
     return () => {
       stale = true;
     };
-  }, [isLive, reloadNonce]);
+  }, [isLive, dataVersion]);
 
   const liveClients = useMemo(
     () => (live ? [...new Set(live.rows.map((r) => r[LIVE_CLIENT_COLUMN]).filter(Boolean))].sort() : []),
     [live],
   );
-  // A client picked before a refresh may no longer be in the data.
-  const activeClient = liveClients.includes(clientFilter) ? clientFilter : '__all__';
+  // A client picked before a refresh may no longer be in the data. Keyed on
+  // the names, not the array: the defaults arrive as a new array each render.
+  const clientKey = clientFilter.join('||');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const activeClients = useMemo(() => clientFilter.filter((c) => liveClients.includes(c)), [clientKey, liveClients]);
+
+  // The picked clients' work orders that arrived from AroFlo with the
+  // priority field empty — listed at the bottom of the page.
+  const noPriorityRows = useMemo(
+    () =>
+      (live?.rows ?? []).filter(
+        (r) => !r.Priority && (activeClients.length === 0 || activeClients.includes(r[LIVE_CLIENT_COLUMN])),
+      ),
+    [live, activeClients],
+  );
 
   function resetFilters() {
     setMonthFilter('__recent__');
@@ -140,12 +167,12 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
     try {
       if (csvText) return buildDataset(csvText, now);
       if (!live) return null;
-      const rows = activeClient === '__all__' ? live.rows : live.rows.filter((r) => r[LIVE_CLIENT_COLUMN] === activeClient);
+      const rows = activeClients.length ? live.rows.filter((r) => activeClients.includes(r[LIVE_CLIENT_COLUMN])) : live.rows;
       return buildDatasetFromRows(live.headers, rows, now);
     } catch (e) {
       return { error: e instanceof Error ? e.message : 'Failed to parse CSV' } as { error: string };
     }
-  }, [csvText, live, activeClient, now]);
+  }, [csvText, live, activeClients, now]);
 
   const dataset = parsed && !('error' in parsed) ? parsed : null;
   const datasetError = parsed && 'error' in parsed ? parsed.error : null;
@@ -285,45 +312,25 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
         {isLive && (
           <>
             <span className="text-[12px] font-semibold" style={{ color: palette.inkPrimary }}>
-              Live from AroFlo
+              From AroFlo
             </span>
-            <button
-              onClick={() => setReloadNonce((n) => n + 1)}
-              className="px-3 py-1.5 rounded-md text-[12px] font-semibold inline-flex items-center gap-1"
-              style={outlineButton}
-              title="Re-read the latest work orders the server holds from AroFlo"
-            >
-              <span className="material-symbols-outlined text-[16px]">refresh</span>
-              Refresh
-            </button>
             {live && (
               <span className="text-[12px]" style={{ color: palette.inkSecondary }}>
                 {live.rows.length.toLocaleString()} work orders
-                {live.lastFetchedAt && (
-                  <span style={{ color: palette.inkMuted }}>
-                    {' '}
-                    · as of {new Date(live.lastFetchedAt).toLocaleTimeString()}
-                  </span>
-                )}
               </span>
             )}
             {liveClients.length > 1 && (
-              <label className="text-[12px] inline-flex items-center gap-2" style={{ color: palette.inkSecondary }}>
+              <div className="text-[12px] inline-flex items-center gap-2" style={{ color: palette.inkSecondary }}>
                 Client
-                <select
-                  value={activeClient}
-                  onChange={(e) => setClientFilter(e.target.value)}
-                  className="px-2 py-1 rounded-md text-[12px]"
-                  style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
-                >
-                  <option value="__all__">All clients</option>
-                  {liveClients.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                <div style={{ width: 240 }}>
+                  <ClientMultiSelect
+                    palette={palette}
+                    options={liveClients.map((c) => ({ value: c, label: c }))}
+                    selected={activeClients}
+                    onChange={setClientFilter}
+                  />
+                </div>
+              </div>
             )}
           </>
         )}
@@ -354,7 +361,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
               )}
             </span>
             <button onClick={clearUpload} className="text-[12px] underline" style={{ color: palette.inkMuted }}>
-              clear — back to live data
+              clear — back to AroFlo data
             </button>
           </>
         )}
@@ -366,7 +373,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
           </span>
         ) : (
           <span className="text-[12px] w-full" style={{ color: palette.inkMuted }}>
-            Showing the uploaded file instead of live AroFlo data. Edited the file? Re-pick it with <b>Replace CSV</b> —
+            Showing the uploaded file instead of AroFlo data. Edited the file? Re-pick it with <b>Replace CSV</b> —
             the browser can’t re-read a file from disk on its own.
           </span>
         )}
@@ -387,20 +394,15 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
           Could not load work orders from the server: {liveError}
         </p>
       )}
-      {isLive && live?.error && (
-        <p className="text-[12px] mb-3" style={{ color: palette.statusCritical }}>
-          AroFlo’s last refresh failed ({live.error})
-          {live.rows.length > 0 ? ' — showing the work orders that loaded before it.' : '.'}
-        </p>
-      )}
+      {/* A failed AroFlo refresh is reported by the bar at the top of the page. */}
       {isLive && !live && !liveError && (
         <p className="text-[13px] mb-3" style={{ color: palette.inkMuted }}>
-          Loading work orders from AroFlo…
+          Loading work orders…
         </p>
       )}
       {liveEmpty && (
         <p className="text-[13px] mb-3" style={{ color: palette.inkMuted }}>
-          No work orders have loaded from AroFlo yet. Upload a CSV export to use the matrix in the meantime.
+          No work orders are loaded yet. Press <b>Refresh from AroFlo</b> at the top of the page, or upload a CSV export.
         </p>
       )}
 
@@ -489,7 +491,8 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
 
           <MatrixTable results={results} palette={palette} striped={striped} />
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+          {/* items-start: each chart is as tall as its own rows need. */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 items-start">
             <OnTimeChart results={results} palette={palette} />
             <FactorsChart late={late} palette={palette} />
           </div>
@@ -515,7 +518,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
                 ))}
               </select>
             </label>
-            <div className="overflow-auto rounded-md" style={{ border: `1px solid ${palette.border}`, maxHeight: 460 }}>
+            <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 460 }}>
               <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
                 <thead>
                   <tr>
@@ -556,9 +559,68 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
             </div>
           </div>
 
+          {/* Exactly what AroFlo's API sent for the jobs the reports call
+              "No priority", so they can be looked up and compared in AroFlo. */}
+          {isLive && noPriorityRows.length > 0 && (
+            <details className="mt-4 text-[12px]" style={{ color: palette.inkSecondary }}>
+              <summary className="cursor-pointer font-semibold">
+                Work orders AroFlo sent with no priority ({noPriorityRows.length})
+              </summary>
+              <p className="mt-2 mb-2" style={{ color: palette.inkMuted }}>
+                For each of these, the priority field in AroFlo’s API reply was empty. They are left out of the tiered rows
+                above and show as “No priority” on the Work Orders page. Follows the client filter at the top.
+              </p>
+              <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 460 }}>
+                <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
+                  <thead>
+                    <tr>
+                      {['Job', 'Task', 'Client', 'Status', 'Requested', 'Priority from AroFlo'].map((h) => (
+                        <th
+                          key={h}
+                          className="text-left px-3 py-2 font-semibold sticky top-0 z-10"
+                          style={{ color: palette.inkSecondary, background: palette.pagePlane }}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {noPriorityRows.map((r, i) => (
+                      <tr key={`${r.Jobnumber}-${i}`} style={{ background: striped && i % 2 ? palette.pagePlane : 'transparent' }}>
+                        <td className="px-3 py-1.5">{r.Jobnumber || '(no job number)'}</td>
+                        <td className="px-3 py-1.5">{r.Task}</td>
+                        <td className="px-3 py-1.5">{r[LIVE_CLIENT_COLUMN]}</td>
+                        <td className="px-3 py-1.5">{r.Status}</td>
+                        <td className="px-3 py-1.5">{r['Requested Date']}</td>
+                        <td className="px-3 py-1.5" style={{ color: palette.inkMuted }}>
+                          (empty)
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+
           <details className="mt-4 text-[12px]" style={{ color: palette.inkSecondary }}>
             <summary className="cursor-pointer font-semibold">Assumptions &amp; known limitations</summary>
             <ul className="list-disc ml-5 mt-2 space-y-1">
+              {isLive && (
+                <li>
+                  {coverageFrom
+                    ? `Only work orders requested since ${formatCoverage(coverageFrom)} are loaded; anything older is not in the matrix.`
+                    : 'Only recent work orders are loaded — the bar at the top says from when.'}{' '}
+                  A work order belongs to the month it was requested in, and every month offered is loaded in full.
+                </li>
+              )}
+              {isLive && (
+                <li>
+                  Opens on the contract clients together; use the client filter for one of them, or All clients for
+                  everyone in AroFlo.
+                </li>
+              )}
               {(isLive ? LIVE_ASSUMPTIONS : ASSUMPTIONS).map((a) => (
                 <li key={a}>{a}</li>
               ))}
@@ -604,7 +666,7 @@ const DiagnosticsPanel: React.FC<{ diag: Diagnostics; palette: Palette; live: bo
       {diag.unmappedPriorities.length > 0 &&
         warn(
           live
-            ? `Priorities with no tier (label them in KPI_PRIORITY_LABELS_JSON): ${diag.unmappedPriorities.join(' | ')}`
+            ? `AroFlo priorities with no level on the P-scale (give them one in KPI_PRIORITY_CODE_MAP_JSON): ${diag.unmappedPriorities.join(' | ')}`
             : `Unmapped Priority values (new AroFlo wording?): ${diag.unmappedPriorities.join(' | ')}`,
         )}
       {!diag.hasDescriptionColumn &&
@@ -642,7 +704,9 @@ const MatrixTable: React.FC<{ results: ReturnType<typeof computeKpis>; palette: 
       : { color: palette.statusCritical, fontWeight: 700, background: 'rgba(220,38,38,0.10)' };
   }
   return (
-    <div className="overflow-auto rounded-md" style={{ border: `1px solid ${palette.border}`, maxHeight: 620 }}>
+    // The surface background is what makes the stripes show: striped rows
+    // are the page colour, so on a bare page they vanish.
+    <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 620 }}>
       <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
         <thead>
           <tr>
@@ -719,6 +783,9 @@ const OnTimeChart: React.FC<{ results: ReturnType<typeof computeKpis>; palette: 
               y: labels,
               text: values.map((v) => `${Math.round(v)}%`),
               textposition: 'outside',
+              // Let a "100%" label run into the right margin instead of
+              // being cut off at the edge of the plot on a narrow card.
+              cliponaxis: false,
               marker: { color: colours },
               hovertemplate: '%{y}<br>on-time %{x:.0f}%<extra></extra>',
             },

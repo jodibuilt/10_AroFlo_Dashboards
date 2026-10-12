@@ -9,6 +9,7 @@
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "build": "npm --prefix frontend ci && npm --prefix frontend run build",
+    "test": "node --test \"test/*.test.js\"",
     "package": "python scripts/package.py",
     "check-drift": "node scripts/checkDrift.js"
   },

@@ -45,7 +45,12 @@ export const TrendChart: React.FC<TrendChartProps> = ({ tasks, palette, stateKey
     const min = allKnown[0];
     const max = allKnown[allKnown.length - 1];
     const allDays: string[] = [];
-    for (let d = new Date(min.replace(/\//g, '-')); d <= new Date(max.replace(/\//g, '-')); d.setDate(d.getDate() + 1)) {
+    // Stepped in UTC, the same clock the day is read back on (toISOString).
+    // Stepping in local time repeats a day and drops the last one whenever
+    // the range crosses a daylight-saving change in the viewer's timezone —
+    // every October for anyone in Adelaide.
+    const end = new Date(max.replace(/\//g, '-'));
+    for (const d = new Date(min.replace(/\//g, '-')); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
       allDays.push(d.toISOString().slice(0, 10).replace(/-/g, '/'));
     }
     return {

@@ -5,6 +5,7 @@ import { fetchReportingConfig } from '../services/reportingConfig';
 import { KpiMatrixSection } from './kpiMatrix/KpiMatrixSection';
 import { AnalyticsTab } from './AnalyticsTab';
 import { InvoicingTab } from './invoicing/InvoicingTab';
+import { RefreshControl } from './components/RefreshControl';
 
 type SubTab = 'matrix' | 'analytics' | 'invoicing';
 
@@ -18,8 +19,8 @@ function loadLocal<T>(key: string, fallback: T): T {
 }
 
 const SUB_TABS: { id: SubTab; label: string; subtitle: string }[] = [
-  { id: 'matrix', label: 'KPI Matrix', subtitle: 'Client SLA compliance template — live from the AroFlo API, or an uploaded task export (CSV)' },
-  { id: 'analytics', label: 'Work Orders', subtitle: 'Live work-order analytics from the AroFlo API' },
+  { id: 'matrix', label: 'KPI Matrix', subtitle: 'Client SLA compliance template — from the AroFlo API, or an uploaded task export (CSV)' },
+  { id: 'analytics', label: 'Work Orders', subtitle: 'Work-order analytics from the AroFlo API' },
   { id: 'invoicing', label: 'Invoicing', subtitle: 'Invoiced / paid / outstanding by client, from the AroFlo API' },
 ];
 
@@ -36,9 +37,9 @@ interface Props {
   themeMode?: ThemeMode;
 }
 
-// Shell for the Reports tab. Owns theme + striped + which sub-tab is active,
-// and the report config (for the title). The two panes — the CSV-driven KPI
-// Matrix and the live Analytics dashboard — are fully separate below.
+// Shell for the Reports tab. Owns theme + which sub-tab is active, and the
+// report config (for the title). The two panes — the CSV-driven KPI Matrix
+// and the live Analytics dashboard — are fully separate below.
 export const ReportingDashboardView: React.FC<Props> = ({
   hiddenSubTabs = [],
   isAdmin = false,
@@ -49,7 +50,12 @@ export const ReportingDashboardView: React.FC<Props> = ({
   const [configError, setConfigError] = useState<string | null>(null);
   const [ownThemeMode, setThemeMode] = useState<ThemeMode>(() => loadLocal('reporting-theme', 'system' as ThemeMode));
   const themeMode = hostThemeMode ?? ownThemeMode;
-  const [striped, setStriped] = useState(() => loadLocal('reporting-striped', true));
+  // Table rows are always striped here; this used to be a checkbox.
+  const striped = true;
+  // Bumped when a refresh from AroFlo finishes; the panes re-read on it.
+  const [dataVersion, setDataVersion] = useState(0);
+  // The first day the loaded data covers (YYYY/MM/DD), from the refresh bar.
+  const [coverageFrom, setCoverageFrom] = useState<string | null>(null);
   const [ownSubTab, setSubTab] = useState<SubTab>(() => {
     const saved = loadLocal('reporting-subtab', 'matrix' as SubTab);
     // Guard against a stale id from a previous build (e.g. the retired
@@ -77,9 +83,6 @@ export const ReportingDashboardView: React.FC<Props> = ({
     localStorage.setItem('reporting-theme', JSON.stringify(themeMode));
   }, [themeMode]);
   useEffect(() => {
-    localStorage.setItem('reporting-striped', JSON.stringify(striped));
-  }, [striped]);
-  useEffect(() => {
     localStorage.setItem('reporting-subtab', JSON.stringify(subTab));
   }, [subTab]);
 
@@ -98,27 +101,23 @@ export const ReportingDashboardView: React.FC<Props> = ({
               {active.subtitle}
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-1.5 text-[12px]" style={{ color: palette.inkSecondary }}>
-              <input type="checkbox" checked={striped} onChange={(e) => setStriped(e.target.checked)} />
-              Striped table rows
-            </label>
-            {!hostThemeMode && (
-              <div className="flex gap-1 rounded-md p-0.5" style={{ border: `1px solid ${palette.border}` }}>
-                {(['light', 'dark', 'system'] as ThemeMode[]).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setThemeMode(m)}
-                    className="px-2 py-1 rounded-md text-[11px] font-semibold capitalize"
-                    style={{ background: themeMode === m ? palette.border : 'transparent', color: palette.inkPrimary }}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          {!hostThemeMode && (
+            <div className="flex gap-1 rounded-md p-0.5" style={{ border: `1px solid ${palette.border}` }}>
+              {(['light', 'dark', 'system'] as ThemeMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setThemeMode(m)}
+                  className="px-2 py-1 rounded-md text-[11px] font-semibold capitalize"
+                  style={{ background: themeMode === m ? palette.border : 'transparent', color: palette.inkPrimary }}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
+
+        <RefreshControl palette={palette} onRefreshed={() => setDataVersion((v) => v + 1)} onCoverage={setCoverageFrom} />
 
         {/* Sub-tab switcher */}
         {!tab && visibleSubTabs.length > 0 && (
@@ -156,9 +155,28 @@ export const ReportingDashboardView: React.FC<Props> = ({
           </p>
         ) : (
           <>
-            {subTab === 'matrix' && <KpiMatrixSection palette={palette} striped={striped} />}
-            {subTab === 'analytics' && <AnalyticsTab palette={palette} striped={striped} config={config} />}
-            {subTab === 'invoicing' && <InvoicingTab palette={palette} striped={striped} />}
+            {/* Both of these open on the contract's clients, which come
+                from the config — so they wait for it (or for it to fail). */}
+            {subTab !== 'invoicing' && !config && !configError && (
+              <p className="text-[13px]" style={{ color: palette.inkMuted }}>
+                Loading…
+              </p>
+            )}
+            {subTab === 'matrix' && (config || configError) && (
+              <KpiMatrixSection
+                palette={palette}
+                striped={striped}
+                dataVersion={dataVersion}
+                coverageFrom={coverageFrom}
+                defaultClients={config ? Object.keys(config.targetClients) : []}
+              />
+            )}
+            {subTab === 'analytics' && (config || configError) && (
+              <AnalyticsTab palette={palette} striped={striped} config={config} dataVersion={dataVersion} coverageFrom={coverageFrom} />
+            )}
+            {subTab === 'invoicing' && (
+              <InvoicingTab palette={palette} striped={striped} dataVersion={dataVersion} coverageFrom={coverageFrom} />
+            )}
           </>
         )}
       </div>

@@ -3,8 +3,10 @@ import { Palette, BREAKDOWN_PRIORITIES, PM_PRIORITIES } from './theme';
 import { ReportingConfig, ReportingKpisResponse, ComplianceRow, BreakdownRow } from './types';
 import { fetchReportingClients } from '../services/reportingClients';
 import { fetchReportingKpis } from '../services/reportingKpis';
+import { formatCoverage } from '../services/reportingRefresh';
 import { KpiCard, rateLevel } from './components/KpiCard';
 import { EditableTable, EditableColumn } from './components/EditableTable';
+import { ClientMultiSelect, ClientOption, decodeClients, encodeClients } from './components/ClientMultiSelect';
 import { TrendChart } from './charts/TrendChart';
 import { PriorityChart } from './charts/PriorityChart';
 import { StatusChart } from './charts/StatusChart';
@@ -29,16 +31,25 @@ function formatDisplayDate(v: string | null): string {
 }
 
 const SECTION_H2 = 'text-[1.05rem] font-semibold pb-1 mb-3';
+const ALL_CLIENTS = 'All clients';
 
 interface Props {
   palette: Palette;
   striped: boolean;
   config: ReportingConfig | null;
+  // Changes when the server has re-read AroFlo (the page's Refresh button);
+  // everything here is fetched again.
+  dataVersion?: number;
+  // The first day the loaded data covers (YYYY/MM/DD), if known.
+  coverageFrom?: string | null;
 }
 
-export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
+export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVersion = 0, coverageFrom = null }) => {
   const [otherClients, setOtherClients] = useState<string[]>([]);
-  const [view, setView] = useState('overall');
+  // Opens on the contract's clients together — the "grouped total" the
+  // report is for — rather than on every client in AroFlo. The shell holds
+  // this tab back until the config has loaded, so it is here to read.
+  const [view, setView] = useState(() => encodeClients(config ? Object.keys(config.targetClients) : [], 'overall'));
   const [dateFrom, setDateFrom] = useState(firstOfMonth());
   const [dateTo, setDateTo] = useState(todayStr());
   const [data, setData] = useState<ReportingKpisResponse | null>(null);
@@ -51,7 +62,7 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
 
   useEffect(() => {
     fetchReportingClients().then(setOtherClients).catch(() => {});
-  }, []);
+  }, [dataVersion]);
 
   const effectiveDateFrom = dateFrom > dateTo ? dateTo : dateFrom;
   const effectiveDateTo = dateTo;
@@ -66,31 +77,41 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
       })
       .catch((e) => setLoadError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveDateFrom, effectiveDateTo, view]);
+  }, [effectiveDateFrom, effectiveDateTo, view, dataVersion]);
 
   const scope = useMemo(
     () => ({ view, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo }),
     [view, effectiveDateFrom, effectiveDateTo],
   );
 
-  const viewOptions = useMemo(() => {
-    const opts = [{ value: 'overall', label: 'All clients (grouped)' }];
-    if (!config) return opts;
-    const targetFullNames = new Set(Object.keys(config.targetClients));
-    for (const [fullName, shortLabel] of Object.entries(config.targetClients)) {
-      opts.push({ value: fullName, label: shortLabel });
-    }
+  // `view` stays one string — 'overall', or the picked clients joined — so
+  // the fetches, the saved edits and the Overdue section all key off the
+  // same value. These are the clients inside it.
+  const selectedClients = useMemo(() => decodeClients(view, 'overall'), [view]);
+
+  const clientOptions = useMemo(() => {
+    const targets = config ? config.targetClients : {};
+    const opts: ClientOption[] = Object.entries(targets).map(([fullName, shortLabel]) => ({ value: fullName, label: shortLabel }));
     for (const c of otherClients) {
-      if (!targetFullNames.has(c)) opts.push({ value: c, label: c });
+      if (!(c in targets)) opts.push({ value: c, label: c });
     }
     return opts;
   }, [config, otherClients]);
 
+  // What the current client filter is called, in messages and exports.
+  const viewLabel =
+    selectedClients.length === 0
+      ? ALL_CLIENTS
+      : selectedClients.map((c) => clientOptions.find((o) => o.value === c)?.label ?? c).join(' + ');
+
   const isSahaView = config
     ? view === Object.keys(config.targetClients).find((k) => config.targetClients[k] === 'SAHA')
     : false;
+  // The comparison needs both sides: everyone, or a pick that includes every
+  // target client.
+  const targetNames = config ? Object.keys(config.targetClients) : [];
   const showClientComparison =
-    view === 'overall' && !!config && Object.keys(config.targetClients).length > 0;
+    targetNames.length > 0 && (selectedClients.length === 0 || targetNames.every((n) => selectedClients.includes(n)));
 
   const complianceRows: ComplianceRow[] = data?.priorityCompliance || [];
   const compliant = complianceRows.filter((r) => r.status === 'Met').length;
@@ -217,8 +238,11 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
     setPreparing(true);
     setExportError(null);
     try {
-      const excel = await buildExcelReport({ data, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, view });
-      const pdf = await buildPdfReport({ data, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, view, palette });
+      // The reports print this in their title and file name. One client or
+      // everyone reads as it always has; several get their names.
+      const reportView = selectedClients.length > 1 ? viewLabel : view;
+      const excel = await buildExcelReport({ data, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, view: reportView });
+      const pdf = await buildPdfReport({ data, dateFrom: effectiveDateFrom, dateTo: effectiveDateTo, view: reportView, palette });
       setExcelBlob(excel);
       setPdfBlob(pdf);
     } catch (e) {
@@ -247,21 +271,16 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
 
       {/* Filters row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <label className="md:col-span-2 flex flex-col gap-1 text-[12px]" style={{ color: palette.inkSecondary }}>
+        <div className="md:col-span-2 flex flex-col gap-1 text-[12px]" style={{ color: palette.inkSecondary }}>
           Client
-          <select
-            value={view}
-            onChange={(e) => setView(e.target.value)}
-            className="px-2 py-1.5 rounded-md text-[13px]"
-            style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
-          >
-            {viewOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          <ClientMultiSelect
+            palette={palette}
+            options={clientOptions}
+            selected={selectedClients}
+            onChange={(next) => setView(encodeClients(next, 'overall'))}
+            allLabel={ALL_CLIENTS}
+          />
+        </div>
         <label className="flex flex-col gap-1 text-[12px]" style={{ color: palette.inkSecondary }}>
           Start date
           <input
@@ -290,6 +309,76 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
           Start date was after the end date — using a single-day range.
         </p>
       )}
+      {coverageFrom && effectiveDateFrom.replace(/-/g, '/') < coverageFrom && (
+        <p className="text-[12px]" style={{ color: palette.statusWarningText }}>
+          AroFlo data is only loaded from {formatCoverage(coverageFrom)}, so work orders requested before then are missing
+          from these figures.
+        </p>
+      )}
+
+      {/* What each figure means and what it leaves out, in one place, so a
+          number on this page is never read as something it isn't. */}
+      <details className="text-[12px]" style={{ color: palette.inkSecondary }}>
+        <summary className="cursor-pointer font-semibold">How these figures are worked out, and what they leave out</summary>
+        <ul className="list-disc ml-5 mt-2 space-y-1">
+          <li>
+            <b>Period covered.</b>{' '}
+            {coverageFrom
+              ? `Only work orders requested since ${formatCoverage(coverageFrom)} are loaded.`
+              : 'Only recent work orders are loaded — the bar at the top says from when.'}{' '}
+            Anything older, including a job that is still open, is not in any figure on this page.
+          </li>
+          <li>
+            <b>Which month a work order belongs to.</b> The one it was requested in. Every figure below is for work orders
+            requested inside the date range.
+          </li>
+          <li>
+            <b>Issued</b> — work orders requested in the range. <b>Completed</b> — of those, the ones whose status is now
+            Completed or Archived (not “work finished during the range”). <b>Outstanding</b> — issued minus completed.
+          </li>
+          <li>
+            <b>Open in system</b> (under Outstanding) — every loaded work order for the chosen clients that isn’t finished,
+            whatever the date range.
+          </li>
+          <li>
+            <b>Overdue</b> — still open past its Required Completed Date, or completed after it. The Overdue &amp; Ageing
+            section is open jobs only.
+          </li>
+          <li>
+            <b>Completion rate</b> — completed ÷ issued. <b>Overdue rate</b> — overdue ÷ completed, so it can pass 100% while
+            few of the range’s jobs are finished.
+          </li>
+          <li>
+            <b>Target KPI Compliance</b> — the share of each priority’s work orders that are not overdue, against the target
+            {config
+              ? ` (${Object.entries(config.priorityTargets)
+                  .map(([level, target]) => `${level} ${target}%`)
+                  .join(', ')})`
+              : ''}
+            . A job that is open and not yet due counts as on time.
+          </li>
+          <li>
+            <b>Priorities.</b> Named as AroFlo names them. AP1–AP5 are counted with P1–P5, and SM with PM. P5 has no target,
+            so it is in no compliance row. A work order with another priority, or none, is in General Statistics but not in
+            the priority sections.
+          </li>
+          <li>
+            <b>Actual Start Date</b> — the first labour entry logged on the job. <b>Required Completed Date</b> — the job’s
+            due date in AroFlo.
+          </li>
+          <li>
+            <b>Delay Reason</b> — filled only from substatuses set up as delay reasons, and none are set up yet, so it reads
+            “-”. The Substatus column shows the job’s current substatus.
+          </li>
+          <li>
+            <b>Clients.</b> Opens on {config ? Object.values(config.targetClients).join(' + ') : 'the contract clients'}{' '}
+            together; pick one for its own figures, or All clients for everyone in AroFlo.
+          </li>
+          <li>
+            <b>How fresh.</b> As of the time in the bar at the top. Nothing updates until someone presses Refresh.
+          </li>
+        </ul>
+      </details>
 
       {loading && (
         <div className="rounded-md p-6 text-center text-[13px]" style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkMuted }}>
@@ -303,14 +392,14 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
           style={{ background: 'rgba(2,132,199,0.08)', border: `1px solid ${palette.border}`, color: palette.inkSecondary }}
         >
           No work orders were requested between {formatDisplayDate(effectiveDateFrom)} and {formatDisplayDate(effectiveDateTo)}
-          {view !== 'overall' ? ` for ${viewOptions.find((o) => o.value === view)?.label}` : ''}. Widen the date range or
+          {view !== 'overall' ? ` for ${viewLabel}` : ''}. Widen the date range or
           change the client filter.
         </div>
       )}
 
       {/* Overdue & Ageing Work — independent of the date range (it's "what's open
           right now"), so it renders even when nothing was requested in-range. */}
-      <OverdueAgeingSection palette={palette} striped={striped} view={view} />
+      <OverdueAgeingSection palette={palette} striped={striped} view={view} dataVersion={dataVersion} coverageFrom={coverageFrom} />
 
       {data && hasWork && (
         <>
@@ -322,7 +411,15 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
               <KpiCard label="Issued" value={data.summary.issued.toLocaleString()} level="neutral" palette={palette} />
               <KpiCard label="Completed" value={data.summary.completed.toLocaleString()} level="good" palette={palette} />
-              <KpiCard label="Outstanding" value={data.summary.outstanding.toLocaleString()} level="neutral" palette={palette} />
+              {/* The tile is for the period; the pill is the brief's
+                  "outstanding in the system" — every open job that is loaded. */}
+              <KpiCard
+                label="Outstanding"
+                value={data.summary.outstanding.toLocaleString()}
+                pillText={data.summary.openInSystem === undefined ? null : `${data.summary.openInSystem.toLocaleString()} open in system`}
+                level="neutral"
+                palette={palette}
+              />
               <KpiCard
                 label="Overdue"
                 value={data.summary.overdue.toLocaleString()}
@@ -436,7 +533,10 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
               <TrendChart tasks={data.tasks} palette={palette} stateKey="chart_trend" scope={scope} />
               <PriorityChart tasks={data.tasks} palette={palette} stateKey="chart_priority" scope={scope} />
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* The comparison chart only exists for "All clients"; with one
+                company picked the status chart takes the whole row rather
+                than leaving half of it empty. */}
+            <div className={`grid grid-cols-1 gap-4 ${showClientComparison ? 'lg:grid-cols-2' : ''}`}>
               <StatusChart tasks={data.tasks} palette={palette} stateKey="chart_status" scope={scope} />
               {showClientComparison && config && (
                 <ClientComparisonChart
@@ -462,7 +562,7 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
             PM_PRIORITIES,
             data.pmBreakdown,
             'pm',
-            'No PM work orders in this selection. This account has no PM priority configured, so this section is normally empty.',
+            'No P5 / PM work orders in this selection.',
           )}
 
           {/* Export */}
@@ -472,7 +572,7 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
             </h2>
             <p className="text-[12px] mb-3" style={{ color: palette.inkMuted }}>
               Reports reflect the current selection ({formatDisplayDate(effectiveDateFrom)} – {formatDisplayDate(effectiveDateTo)} ·{' '}
-              {viewOptions.find((o) => o.value === view)?.label}) exactly as shown on screen, including any manual edits —
+              {viewLabel}) exactly as shown on screen, including any manual edits —
               print/save as-is. The General Statistics KPI row is always computed from the real underlying data, since it
               isn't itself an editable table.
             </p>
@@ -506,7 +606,7 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config }) => {
       )}
 
       <p className="text-[11px] pt-2" style={{ color: palette.inkMuted, borderTop: `1px solid ${palette.border}` }}>
-        Source: AroFlo live API
+        Source: AroFlo API
         {data?.meta.lastFetchedAt ? ` · data as of ${formatDisplayDate(data.meta.lastFetchedAt.slice(0, 10))}` : ''} ·{' '}
         {formatDisplayDate(effectiveDateFrom)} – {formatDisplayDate(effectiveDateTo)} · Generated {todayStr()}
       </p>

@@ -1,14 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import type { Layout } from 'plotly.js';
 import { Plot, baseLayout, PLOT_CONFIG } from '../plotly';
 import { Palette } from '../theme';
 import { KpiCard, rateLevel } from '../components/KpiCard';
 import { OverdueAgeingResponse } from '../types';
 import { fetchOverdueAgeing } from '../../services/reportingOverdue';
+import { formatCoverage } from '../../services/reportingRefresh';
 
 interface Props {
   palette: Palette;
   striped: boolean;
   view: string;
+  // Changes when the server has re-read AroFlo; the section fetches again.
+  dataVersion?: number;
+  // The first day the loaded data covers (YYYY/MM/DD), if known.
+  coverageFrom?: string | null;
 }
 
 const BUCKET_ORDER = ['0-7', '8-14', '15-30', '30+'];
@@ -33,7 +39,21 @@ function fmtDate(v: string | null): string {
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view }) => {
+// `yref: 'container'` is newer than the bundled Plotly typings.
+function pinnedLegend(palette: Palette): Partial<Layout['legend']> {
+  return {
+    orientation: 'h',
+    yref: 'container',
+    y: 0,
+    yanchor: 'bottom',
+    x: 0,
+    xanchor: 'left',
+    bgcolor: 'transparent',
+    font: { color: palette.inkSecondary },
+  } as Partial<Layout['legend']>;
+}
+
+export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view, dataVersion = 0, coverageFrom = null }) => {
   const [data, setData] = useState<OverdueAgeingResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<string>('__all__');
@@ -50,7 +70,7 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view }
     return () => {
       cancelled = true;
     };
-  }, [view]);
+  }, [view, dataVersion]);
 
   const d = data?.data;
 
@@ -73,6 +93,8 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view }
       <p className="text-[12px] mb-3" style={{ color: palette.inkMuted }}>
         Open work orders past their due date{data ? `, as of ${data.meta.today}` : ''}. Not affected by the date range
         above — this is “what’s outstanding right now”. Honours the client filter.
+        {/* The one limit on "right now": a job has to be loaded to be counted. */}
+        {coverageFrom && ` Only work orders requested since ${formatCoverage(coverageFrom)} are loaded, so an older job that is still open is not counted here.`}
       </p>
 
       {error && (
@@ -118,7 +140,9 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view }
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+              {/* items-start: each chart is as tall as its own rows need, so
+                  the shorter card isn't stretched into empty space. */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4 items-start">
                 {/* Stacked bar: priority x ageing bucket */}
                 <div className="rounded-md p-4" style={cardStyle}>
                   <Plot
@@ -137,6 +161,12 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view }
                     layout={{
                       ...baseLayout(palette, { title: 'Overdue by priority and age', hasLegend: true }),
                       barmode: 'stack',
+                      // Pinned to the bottom edge of the chart. The shared
+                      // default places the legend a fraction of the plot
+                      // height below it, and with one or two priorities the
+                      // plot is short enough to land it on the axis title.
+                      legend: pinnedLegend(palette),
+                      margin: { l: 20, r: 30, t: 64, b: 96 },
                       xaxis: { ...baseLayout(palette, { title: '' }).xaxis, title: { text: 'Work orders', standoff: 12 } },
                       yaxis: { ...baseLayout(palette, { title: '' }).yaxis, automargin: true },
                     }}
@@ -192,7 +222,9 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view }
                   ))}
                 </select>
               </div>
-              <div className="overflow-auto rounded-md" style={{ border: `1px solid ${palette.border}`, maxHeight: 460 }}>
+              {/* The surface background is what makes the stripes show: striped
+                  rows are the page colour, so on a bare page they vanish. */}
+              <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 460 }}>
                 <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
                   <thead>
                     <tr>
@@ -212,7 +244,9 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view }
                       <tr key={r.taskId || `${r.jobNumber}-${i}`} style={{ background: striped && i % 2 ? palette.pagePlane : 'transparent' }}>
                         <td className="px-3 py-1.5">{r.jobNumber}</td>
                         <td className="px-3 py-1.5">{r.taskName}</td>
-                        <td className="px-3 py-1.5">{r.priority}</td>
+                        {/* As AroFlo names it ("AP1"); the filter and the
+                            chart above group by level, where AP1 is P1. */}
+                        <td className="px-3 py-1.5">{r.priorityName ?? r.priority}</td>
                         <td className="px-3 py-1.5">{r.client}</td>
                         <td className="px-3 py-1.5">{r.site}</td>
                         <td className="px-3 py-1.5">{fmtDate(r.dueDate)}</td>

@@ -23,12 +23,31 @@ interface EditableTableProps {
 
 const ROWS_PER_PAGE = 20;
 
+type Row = Record<string, string | number | null>;
+
+interface SavedEdit {
+  rows: Row[];
+  extraCols: string[];
+  // On everything saved from here on. This table used to save itself,
+  // untouched, the first time it was shown — so a stored payload without this
+  // is a snapshot of whatever data was on screen that day, not an edit.
+  edited?: boolean;
+}
+
 // Ported from aroflo_dash's editable.py — hand-built per-cell inputs (not a
 // canvas-drawn grid, so it can be themed), autosave on every change (no Save
-// button), Reset re-seeds from the freshly computed default and clears the
-// persisted row. Persistence is the new /api/dashboard-edits/:stateKey route
+// button), Reset goes back to the freshly computed rows and clears the
+// persisted edit. Persistence is the /api/dashboard-edits/:stateKey route
 // (src/server.js), scoped per user+view+dateRange+stateKey — same shape as
 // edit_store.py's SQLite table, JSON instead of pickle.
+//
+// The fresh rows are never copied into state. With no edit the table renders
+// `defaultRows` as they arrive, so a refresh or a change of filter always
+// shows through; only something the user changes becomes an edit, and only
+// an edit is ever saved. (Copying them in was the old behaviour, and it went
+// wrong twice over: the copy was taken before the new filter's data had
+// arrived, so the table showed the previous client's rows, and the copy was
+// then saved as an "edit" that replaced live data from that day on.)
 export const EditableTable: React.FC<EditableTableProps> = ({
   stateKey,
   scope,
@@ -42,69 +61,64 @@ export const EditableTable: React.FC<EditableTableProps> = ({
   emptyMessage,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
-  const [rows, setRows] = useState<Record<string, string | number | null>[]>(defaultRows);
-  const [extraCols, setExtraCols] = useState<string[]>([]);
+  const [edit, setEdit] = useState<SavedEdit | null>(null);
   const [newColName, setNewColName] = useState('');
   const [page, setPage] = useState(0);
-  const skipAutosave = useRef(true);
+  const saveTimer = useRef<number | undefined>(undefined);
+
+  const rows = edit ? edit.rows : defaultRows;
+  const extraCols = edit ? edit.extraCols : [];
 
   useEffect(() => {
-    skipAutosave.current = true;
-    loadDashboardEdit<{ rows: typeof defaultRows; extraCols: string[] }>(stateKey, scope).then((saved) => {
-      if (saved) {
-        setRows(saved.rows);
-        setExtraCols(saved.extraCols || []);
-      } else {
-        setRows(defaultRows);
-        setExtraCols([]);
-      }
-      setPage(0);
-      // Let the seeding render commit before autosave starts reacting.
-      setTimeout(() => {
-        skipAutosave.current = false;
-      }, 0);
-    });
+    let stale = false;
+    setEdit(null);
+    setPage(0);
+    loadDashboardEdit<SavedEdit>(stateKey, scope)
+      .then((saved) => {
+        if (!stale && saved && saved.edited) setEdit({ ...saved, extraCols: saved.extraCols || [] });
+      })
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stateKey, scope.view, scope.dateFrom, scope.dateTo]);
 
-  useEffect(() => {
-    if (skipAutosave.current) return;
-    const t = setTimeout(() => {
-      saveDashboardEdit(stateKey, scope, { rows, extraCols }).catch(() => {});
-    }, 500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, extraCols]);
-
   const allColumns: EditableColumn[] = [...columns, ...extraCols.map((c) => ({ key: c, label: c }))];
 
+  // Every change the user makes goes through here: it starts from what is on
+  // screen, becomes the edit, and is saved shortly after.
+  const applyEdit = (change: (current: SavedEdit) => SavedEdit) => {
+    const next: SavedEdit = { ...change(edit ?? { rows: defaultRows, extraCols: [] }), edited: true };
+    setEdit(next);
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      saveDashboardEdit(stateKey, scope, next).catch(() => {});
+    }, 500);
+  };
+
   const handleCellChange = (rowIdx: number, colKey: string, value: string) => {
-    setRows((prev) => prev.map((r, i) => (i === rowIdx ? { ...r, [colKey]: value } : r)));
+    applyEdit((e) => ({ ...e, rows: e.rows.map((r, i) => (i === rowIdx ? { ...r, [colKey]: value } : r)) }));
   };
 
   const handleAddRow = () => {
-    const blank: Record<string, string | number | null> = {};
+    const blank: Row = {};
     for (const c of allColumns) blank[c.key] = '';
-    setRows((prev) => [...prev, blank]);
+    applyEdit((e) => ({ ...e, rows: [...e.rows, blank] }));
   };
 
   const handleAddColumn = () => {
     const name = newColName.trim();
     if (!name || allColumns.some((c) => c.key === name)) return;
-    setExtraCols((prev) => [...prev, name]);
-    setRows((prev) => prev.map((r) => ({ ...r, [name]: '' })));
+    applyEdit((e) => ({ rows: e.rows.map((r) => ({ ...r, [name]: '' })), extraCols: [...e.extraCols, name] }));
     setNewColName('');
   };
 
   const handleReset = () => {
-    skipAutosave.current = true;
+    window.clearTimeout(saveTimer.current);
     deleteDashboardEdit(stateKey, scope).catch(() => {});
-    setRows(defaultRows);
-    setExtraCols([]);
+    setEdit(null);
     setPage(0);
-    setTimeout(() => {
-      skipAutosave.current = false;
-    }, 0);
   };
 
   const pageRows = isEditing ? rows.slice(page * ROWS_PER_PAGE, (page + 1) * ROWS_PER_PAGE) : rows;
@@ -113,6 +127,16 @@ export const EditableTable: React.FC<EditableTableProps> = ({
   return (
     <div className="rounded-md overflow-hidden" style={{ background: palette.surface, border: `1px solid ${palette.border}` }}>
       <div className="flex items-center justify-end gap-2 px-3 py-2" style={{ borderBottom: `1px solid ${palette.border}` }}>
+        {/* An edit replaces the live rows, so say so — otherwise a table that
+            has stopped following AroFlo looks exactly like one that hasn't. */}
+        {edit && (
+          <span className="mr-auto text-[11px]" style={{ color: palette.statusWarningText }}>
+            Showing your edited version of this table, not the latest AroFlo data.{' '}
+            <button onClick={handleReset} className="underline font-semibold">
+              Reset
+            </button>
+          </span>
+        )}
         {extraHeaderControls}
         <button
           onClick={() => setIsEditing((v) => !v)}

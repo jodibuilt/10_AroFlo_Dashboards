@@ -45,6 +45,7 @@ class AroFloClient {
     this.secretKey = secretKey;
     this.accept = accept;
     this.hostIp = hostIp || undefined;
+    this.requestCount = 0;
 
     this.http = axios.create({ baseURL: baseUrl, timeout: 30000 });
     // Read-only, enforced rather than just intended: this is the app's only
@@ -65,6 +66,11 @@ class AroFloClient {
       reservoirRefreshAmount: rateLimitPerSecond,
       reservoirRefreshInterval: 1000,
       maxConcurrent: rateLimitPerSecond,
+      // The reservoir alone only counts per clock second, so two requests
+      // can still go out back to back either side of a tick — which AroFlo
+      // rejects ("Exceeded Per Second Rate Limit"), and a rejected request
+      // still comes out of the daily allowance. Space them evenly as well.
+      minTime: Math.ceil(1000 / rateLimitPerSecond),
     });
     const perMinute = new Bottleneck({
       reservoir: rateLimitPerMinute,
@@ -108,46 +114,72 @@ class AroFloClient {
   }
 
   async send(varString, attempt = 1) {
-    return this.limiter.schedule(async () => {
-      const afDateTimeUtc = new Date().toISOString();
-      const authorization = buildAuthorizationHeader(this.credentials);
-      const payload = buildCanonicalPayload({
-        method: 'GET',
-        hostIp: this.hostIp,
-        urlPath: '',
-        accept: this.accept,
-        authorization,
-        afDateTimeUtc,
-        varString,
-      });
-      const signature = signPayload(payload, this.secretKey);
-      const headers = buildAuthHeaders({
-        signature,
-        authorization,
-        accept: this.accept,
-        afDateTimeUtc,
-        hostIp: this.hostIp,
-      });
-
-      try {
-        const response = await this.http.get(`?${varString}`, { headers });
-        return this.checkEnvelope(response.data);
-      } catch (err) {
-        const mapped = this.mapError(err);
-        if (isRetryable(mapped) && attempt < 3) {
-          const delayMs = mapped instanceof AroFloRateLimitError ? 1000 * attempt : 0;
-          this.logger.warn(`Retrying AroFlo GET request (attempt ${attempt + 1})`, {
-            error: mapped.message,
-            delayMs,
-          });
-          if (delayMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-          }
-          return this.send(varString, attempt + 1);
+    try {
+      // Each attempt is its own limiter job, and the retry below runs after
+      // it has finished. A retry started from INSIDE a running job waits for
+      // a slot that job is still holding; with one request a second allowed
+      // there is only the one slot, so it never comes — the first rate-limit
+      // reply froze the refresh, and every later one was skipped as
+      // "already in progress".
+      return await this.limiter.schedule(() => this.signedGet(varString));
+    } catch (err) {
+      const mapped = this.mapError(err);
+      if (isRetryable(mapped) && attempt < 3) {
+        const delayMs = mapped instanceof AroFloRateLimitError ? 1000 * attempt : 0;
+        this.logger.warn(`Retrying AroFlo GET request (attempt ${attempt + 1})`, {
+          error: mapped.message,
+          delayMs,
+        });
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
-        throw mapped;
+        return this.send(varString, attempt + 1);
       }
+      throw mapped;
+    }
+  }
+
+  // One signed GET. Signed inside the limiter job, so the timestamp in the
+  // signature is from when the request actually goes out.
+  async signedGet(varString) {
+    const afDateTimeUtc = new Date().toISOString();
+    const authorization = buildAuthorizationHeader(this.credentials);
+    const payload = buildCanonicalPayload({
+      method: 'GET',
+      hostIp: this.hostIp,
+      urlPath: '',
+      accept: this.accept,
+      authorization,
+      afDateTimeUtc,
+      varString,
     });
+    const signature = signPayload(payload, this.secretKey);
+    const headers = buildAuthHeaders({
+      signature,
+      authorization,
+      accept: this.accept,
+      afDateTimeUtc,
+      hostIp: this.hostIp,
+    });
+
+    // Counted whether or not AroFlo accepts it — a refused request still
+    // comes out of the daily allowance.
+    this.requestCount += 1;
+    const response = await this.http.get(`?${varString}`, { headers });
+    this.noteDailyAllowance(response.headers);
+    return this.checkEnvelope(response.data);
+  }
+
+  // AroFlo allows each API user a fixed number of requests a day and reports
+  // what's left on every response. Kept so the cache can log it after a
+  // refresh — running out locks that user out of the API until the next day,
+  // for everything that shares the login.
+  noteDailyAllowance(headers = {}) {
+    const limit = Number(headers['x-ratelimit-daily-limit']);
+    const remaining = Number(headers['x-ratelimit-daily-remaining']);
+    if (Number.isFinite(limit) && Number.isFinite(remaining)) {
+      this.dailyAllowance = { limit, remaining };
+    }
   }
 
   checkEnvelope(data) {

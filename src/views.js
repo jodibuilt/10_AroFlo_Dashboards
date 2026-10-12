@@ -1,19 +1,44 @@
 const config = require('./config');
 const { parseAroFloDateTime } = require('./aroflo/aroFloDates');
-const { daysBetween } = require('./normalize');
+const { daysBetween, isPastDate } = require('./normalize');
 const kpi = require('./kpi');
 
 const REPORTING_BREAKDOWN_PRIORITIES = ['P1', 'P2', 'P3', 'P4'];
 const REPORTING_PM_PRIORITIES = ['P5', 'PM'];
 
+// Several clients can be picked at once: they arrive as one `view` value,
+// joined with this (frontend: reporting/components/ClientMultiSelect.tsx).
+const VIEW_SEPARATOR = '||';
+
+function viewParts(view) {
+  return String(view || '')
+    .split(VIEW_SEPARATOR)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// The work-order reports' client filter: 'overall' is everyone, anything
+// else is the real client names to keep.
+function tasksInView(tasks, view) {
+  const clients = viewParts(view).filter((name) => name !== 'overall');
+  return clients.length ? tasks.filter((t) => clients.includes(t.client)) : tasks;
+}
+
+// Not yet Completed / Archived (COMPLETED_TASK_STATUSES).
+function isOpen(task) {
+  return !config.completedTaskStatuses.includes(String(task.status || '').toLowerCase());
+}
+
 // Ported from aroflo_dash. `view` is either the sentinel 'overall' (no client
-// filter) or a literal real client name to filter to — uniform for the
-// literal Ventia/SAHA options and any other real client the frontend offers
-// (see buildReportingClients below), so nothing here special-cases which.
+// filter) or real client names to filter to (see tasksInView) — uniform for
+// the literal Ventia/SAHA options and any other real client the frontend
+// offers (see buildReportingClients below), so nothing here special-cases
+// which.
 function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
   const { records, lastFetchedAt, error } = cache.get('jobs');
   const { priorityCodeMap, priorityTargets } = config.reporting;
   const delayReasonSubstatuses = config.kpi.delayReasonSubstatuses;
+  const prioritiesState = cache.get('priorities');
 
   // requestDate is always zero-padded "YYYY/MM/DD" (AroFlo v1's own format —
   // see aroFloDates.js), which sorts correctly as a plain string; normalize
@@ -29,14 +54,22 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
     if (to && t.requestDate > to) return false;
     return true;
   });
-  const scoped = view && view !== 'overall' ? inRange.filter((t) => t.client === view) : inRange;
+  const scoped = tasksInView(inRange, view);
   // Only the Target KPI Compliance section and the P1-P4/PM breakdown tables
   // are priority-scale-specific (aroflo_dash's own General Statistics row is
   // computed from ALL tasks in scope, unfiltered by priority — see kpis.py's
   // compute_kpis taking the full df, while compute_priority_kpi_compliance/
-  // build_breakdown_table take the P-coded one) — applyPriorityCodeMap DROPS
-  // any task with no mapping, so it must not feed the General Statistics KPIs.
-  const pCoded = kpi.applyPriorityCodeMap(scoped, priorityCodeMap);
+  // build_breakdown_table take the P-coded one). A task whose priority has no
+  // level on the scale (src/priorities.js) is DROPPED here, so this must not
+  // feed the General Statistics KPIs. kpi.js reads the level from
+  // priorityLabel, hence the swap.
+  const pCoded = scoped.filter((t) => t.priorityCode).map((t) => ({ ...t, priorityLabel: t.priorityCode }));
+
+  // The "Task ID" people know is AroFlo's job number. The record's own
+  // `taskid` is an opaque internal code ("JidaLyxQPEciCg=="), so the
+  // breakdown rows carry the job number in that field — the table on screen
+  // and the Excel / PDF exports all print it as-is.
+  const withJobNumbers = (rows) => rows.map((r) => ({ ...r, taskId: r.jobNumber || r.taskId }));
 
   // test_all_aroflo fills this from its trigger engine's substatus history.
   // There is no engine here, so the breakdown's delay reason always falls
@@ -44,27 +77,40 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
   const breakdownOpts = { delayRelevantByTaskId: {}, delayReasonsOfInterest: delayReasonSubstatuses };
 
   return {
-    summary: kpi.computeKpis(scoped),
+    summary: {
+      ...kpi.computeKpis(scoped),
+      // "Outstanding in the system": every loaded work order for these
+      // clients that isn't finished, whatever period it was requested in.
+      // `outstanding` above is only the ones requested inside the date range.
+      openInSystem: tasksInView(records, view).filter(isOpen).length,
+    },
     priorityCompliance: kpi.computePriorityKpiCompliance(pCoded, priorityTargets),
-    breakdown: kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_BREAKDOWN_PRIORITIES, ascending: false, ...breakdownOpts }),
-    pmBreakdown: kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_PM_PRIORITIES, ascending: false, ...breakdownOpts }),
+    breakdown: withJobNumbers(
+      kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_BREAKDOWN_PRIORITIES, ascending: false, ...breakdownOpts }),
+    ),
+    pmBreakdown: withJobNumbers(
+      kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_PM_PRIORITIES, ascending: false, ...breakdownOpts }),
+    ),
     // Raw scoped tasks (NOT priority-filtered) for the frontend's own chart
     // aggregation (trend/status/client-comparison need every task; the
-    // priority-volume chart only builds P-lanes for tasks whose priority did
-    // map — `priority` is null here for anything unmapped, same as
+    // priority-volume chart only builds P-lanes for tasks whose priority has
+    // a level — `priority` is null here for anything without one, same as
     // aroflo_dash's own P-scale charts simply not counting those rows).
     tasks: scoped.map((t) => ({
       taskId: t.taskId,
       client: t.client,
       status: t.status,
-      priority: priorityCodeMap[t.priorityLabel] || null,
+      priority: t.priorityCode || null,
       requestDate: t.requestDate,
       completedDate: t.completedDate,
     })),
     meta: {
       lastFetchedAt,
       error,
-      priorityCodeMapConfigured: Object.keys(priorityCodeMap).length > 0,
+      // The page uses this to explain an empty P-scale section. Levels now
+      // come from AroFlo's own priority names, so it only reads false when
+      // there is neither that list nor a configured map to fall back on.
+      priorityCodeMapConfigured: prioritiesState.records.length > 0 || Object.keys(priorityCodeMap).length > 0,
     },
   };
 }
@@ -72,9 +118,16 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
 // Overdue / ageing work report. Every open task past its due date, right now
 // — deliberately NOT filtered by the reporting date range (overdue is a "now"
 // concept; requestDate could be months back), but it does honour the client
-// `view` filter so it lines up with the rest of the Reports tab. Uses the
-// same `t.overdue` flag normalizeTask already computes
-// (isPastDate(dueDate) && !completed).
+// `view` filter so it lines up with the rest of the Reports tab.
+//
+// "Past its due date" is worked out here, against today. normalizeTask's own
+// `overdue` flag is the same test, but frozen at the moment the data was
+// loaded — and with loading now manual, that can be days ago: a job that
+// fell due since would be missing while the others' days-overdue kept
+// counting up.
+//
+// It can only count what is loaded: an open job requested before the
+// reports' first day (cache.coverageFrom) is not here.
 const OVERDUE_BUCKETS = [
   { key: '0-7', label: '0–7 days', min: 0, max: 7 },
   { key: '8-14', label: '8–14 days', min: 8, max: 14 },
@@ -99,8 +152,8 @@ function buildOverdueAgeing(cache, { view } = {}) {
   const { records, lastFetchedAt, error } = cache.get('jobs');
   const today = new Date();
 
-  const scoped = view && view !== 'overall' ? records.filter((t) => t.client === view) : records;
-  const overdue = scoped.filter((t) => t.overdue === true);
+  const scoped = tasksInView(records, view);
+  const overdue = scoped.filter((t) => isOpen(t) && isPastDate(t.dueDate));
 
   const zeroBuckets = () => Object.fromEntries(OVERDUE_BUCKETS.map((b) => [b.key, 0]));
   const bucketCounts = zeroBuckets();
@@ -114,7 +167,11 @@ function buildOverdueAgeing(cache, { view } = {}) {
     const bucket = days === null ? null : overdueBucketFor(days);
     if (bucket) bucketCounts[bucket] += 1;
 
-    const priority = t.priorityLabel || 'Unmapped';
+    // Grouped by level where the priority has one, so P1 and AP1 count
+    // together; anything off the scale keeps the name AroFlo gives it. Each
+    // row also carries that name as-is, for the table.
+    const priorityName = t.priorityLabel || 'No priority';
+    const priority = t.priorityCode || priorityName;
     const client = t.client || 'Unknown';
     const site = t.locationName || 'Unknown';
 
@@ -132,6 +189,7 @@ function buildOverdueAgeing(cache, { view } = {}) {
       taskName: t.taskName,
       client,
       priority,
+      priorityName,
       site,
       dueDate: t.requiredCompletedDate,
       daysOverdue: days,
@@ -218,6 +276,8 @@ function _invoicesWithPayments(cache) {
       lastFetchedAt: invoicesState.lastFetchedAt,
       error: invoicesState.error,
       paymentsError: paymentsState.error,
+      // Loaded, but not all of it — see DashboardCache.refreshZone.
+      paymentsWarning: paymentsState.warning || null,
       paymentsLastFetchedAt: paymentsState.lastFetchedAt,
       paymentsRecordCount: paymentsState.records.length,
     },
@@ -234,7 +294,9 @@ function buildInvoicingReport(cache, { view, dateFrom, dateTo } = {}) {
   const norm = (s) => (s ? String(s).replace(/-/g, '/') : s);
   const from = norm(dateFrom);
   const to = norm(dateTo);
-  const activeBuckets = INVOICE_VIEW_BUCKETS[view] || INVOICE_BUCKETS;
+  // One or more of the bucket views above; nothing recognised means all.
+  const picked = viewParts(view).flatMap((v) => INVOICE_VIEW_BUCKETS[v] || []);
+  const activeBuckets = picked.length ? INVOICE_BUCKETS.filter((b) => picked.includes(b)) : INVOICE_BUCKETS;
 
   const inRange = allRows.filter((r) => {
     if (from && (!r.dateInvoiced || r.dateInvoiced < from)) return false;
@@ -345,9 +407,10 @@ function buildInvoicingReport(cache, { view, dateFrom, dateTo } = {}) {
       view: view || 'all',
       dateFrom: dateFrom || null,
       dateTo: dateTo || null,
-      // AroFlo's Payments zone only reliably returns ~the last 30 days; this
-      // account currently returns 0 payment records at all. Surfaced in the UI.
-      paymentsCoverFullRange: meta.paymentsRecordCount > 0 && !meta.paymentsError,
+      // True only when the payments behind "Paid" are all there: loaded,
+      // without an error, and not cut short or narrowed (paymentsWarning).
+      // The page says which when it isn't.
+      paymentsCoverFullRange: meta.paymentsRecordCount > 0 && !meta.paymentsError && !meta.paymentsWarning,
     },
   };
 }
@@ -367,9 +430,10 @@ function buildKpiMatrixTasks(cache) {
       client: t.client,
       status: t.status,
       substatus: t.substatus,
-      // The raw id for a priority with no label configured, so the matrix's
-      // diagnostics can name it instead of silently dropping the tier.
-      priority: t.priorityLabel || t.priorityId,
+      // The matrix tiers on the P-scale, so it gets the level. A priority
+      // without one goes over under its AroFlo name (or bare id), so the
+      // matrix's diagnostics can say what it is instead of silently dropping it.
+      priority: t.priorityCode || t.priorityLabel || t.priorityId,
       requestedAt: t.requestDateTime || t.requestDate,
       dueAt: t.dueDateTime || t.dueDate,
       startedAt: t.actualStartDate,
@@ -395,4 +459,5 @@ module.exports = {
   buildOverdueAgeing,
   buildInvoicingReport,
   buildKpiMatrixTasks,
+  invoiceClientBucket,
 };

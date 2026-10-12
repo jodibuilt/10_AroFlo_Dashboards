@@ -18,6 +18,19 @@ import {
 
 export type Tri = boolean | null;
 
+// The P-scale codes themselves, for rows that carry the level rather than the
+// contract wording PRIORITY_MAP is keyed on — the live AroFlo feed does (the
+// server reads the level off AroFlo's own priority name, so AP3 arrives as
+// P3). Level 5 sits in the P4 (30-day) tier, like the AP5 wording there.
+const CODE_TIERS: Record<string, [Tier, number]> = {
+  P1: ['P1', 0],
+  P2: ['P2', 3],
+  P3: ['P3', 14],
+  P4: ['P4', 30],
+  P5: ['P4', 30],
+  PM: ['PM', 30],
+};
+
 export interface KpiTaskRow {
   jobNumber: string;
   task: string;
@@ -194,7 +207,7 @@ export function buildDatasetFromRows(
 
   const rows: KpiTaskRow[] = deduped.map((r) => {
     const priority = blank(r.Priority);
-    const mapped = PRIORITY_MAP[priority];
+    const mapped = PRIORITY_MAP[priority] ?? CODE_TIERS[priority];
     const tier = mapped ? mapped[0] : null;
     const slaDays = mapped ? mapped[1] : null;
     if (!tier) {

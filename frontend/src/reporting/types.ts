@@ -12,10 +12,14 @@ export interface ReportTask {
 export interface KpiSummary {
   issued: number;
   completed: number;
+  // Requested in the date range and not finished.
   outstanding: number;
   overdue: number;
   completionRate: number;
   overdueRate: number;
+  // Every loaded work order for the clients that isn't finished, whatever
+  // period it was requested in — "outstanding in the system".
+  openInSystem?: number;
 }
 
 export interface ComplianceRow {
@@ -77,7 +81,10 @@ export interface OverdueJobRow {
   jobNumber: string;
   taskName: string;
   client: string;
+  // `priority` is what the section groups and filters by: the P-scale level
+  // where the priority has one. `priorityName` is AroFlo's own name for it.
   priority: string;
+  priorityName?: string;
   site: string;
   dueDate: string | null;
   daysOverdue: number | null;
@@ -137,6 +144,8 @@ export interface InvoicingReportResponse {
     lastFetchedAt: string | null;
     error: string | null;
     paymentsError: string | null;
+    // Payments loaded, but not all of them — and why.
+    paymentsWarning?: string | null;
     paymentsLastFetchedAt: string | null;
     paymentsRecordCount: number;
     paymentsCoverFullRange: boolean;

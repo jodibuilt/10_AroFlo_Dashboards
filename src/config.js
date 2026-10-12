@@ -33,7 +33,6 @@ const config = {
   },
   rateLimitPerSecond: Number(process.env.RATE_LIMIT_PER_SECOND || 1),
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE || 60),
-  refreshIntervalMinutes: Number(process.env.REFRESH_INTERVAL_MINUTES || 10),
   interZoneDelayMs: Number(process.env.INTER_ZONE_DELAY_MS || 750),
   pageSize: Number(process.env.PAGE_SIZE || 200),
   maxPagesPerZone: Number(process.env.MAX_PAGES_PER_ZONE || 25),
@@ -63,12 +62,16 @@ const config = {
     adminPassword: process.env.ADMIN_PASSWORD || '',
     adminDisplayName: process.env.ADMIN_DISPLAY_NAME || 'Admin',
   },
-  payments: {
-    lookbackDays: Number(process.env.PAYMENTS_LOOKBACK_DAYS || 180),
-  },
+  // How far back the reports reach: work orders, invoices and payments are
+  // loaded from the first day of the month this many months before the
+  // current one. AroFlo has to be TOLD — asked for a zone without a date
+  // filter it quietly returns only the last 30 days. Whole months, so a
+  // month picked on the KPI Matrix is never half there.
+  lookbackMonths: Number(process.env.REPORT_LOOKBACK_MONTHS || 2),
   kpi: {
-    // Safe to pre-fill — this account's OWN confirmed priorityid values
-    // (from this session's own recon), not borrowed from any other org.
+    // {priorityid: name} — a FALLBACK only. Priority names are read live from
+    // AroFlo's Priorities zone (src/priorities.js); this fills in for an id
+    // that list doesn't return. The defaults are the test account's ids.
     priorityLabels: parseJson(process.env.KPI_PRIORITY_LABELS_JSON, {
       IydaKyMK: 'Emergency',
       IydaKywK: 'Urgent',
@@ -82,13 +85,11 @@ const config = {
   // SLA percentages are aroflo_dash's own generic reporting convention kept
   // literal, but the priorityid->P-code MAPPING is account-specific.
   reporting: {
-    // {ourPriorityLabel: "P1"|"P2"|"P3"|"P4"|"P5"|"PM"} — this account's own
-    // 4 real priorities (Emergency/Urgent/Standard/After Hours, confirmed
-    // live via the Priorities zone) mapped onto aroflo_dash's P-scale in
-    // severity order. No 5th priority exists on this account for "PM"
-    // (Preventative Maintenance), so PM is deliberately left unmapped; the
-    // Reports page's PM tab shows its normal empty state rather than a
-    // guessed value.
+    // {AroFlo priority name: "P1"|"P2"|"P3"|"P4"|"P5"|"PM"} — only for names
+    // that don't state their own level. "P2", "AP2", "PM" and "SM" are read
+    // from the name itself (src/priorities.js) and need no entry here; an
+    // entry here wins if there is one. The defaults cover the test account,
+    // whose four priorities are plain words.
     priorityCodeMap: parseJson(process.env.KPI_PRIORITY_CODE_MAP_JSON, {
       Emergency: 'P1',
       Urgent: 'P2',

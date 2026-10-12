@@ -13,6 +13,11 @@ export const Plot = createPlotlyComponent(Plotly);
 // axis styling, font). See cosmic-tumbling-pearl.md for the source values.
 export function baseLayout(palette: Palette, opts: { title: string; hasLegend?: boolean }): Partial<Layout> {
   return {
+    // Re-measure the container on every update. Without this Plotly keeps
+    // the size of its first draw, and several charts size their container
+    // from the data (rows x px): change a filter and the chart either spills
+    // out of a box that shrank or sits small in one that grew.
+    autosize: true,
     paper_bgcolor: palette.surface,
     plot_bgcolor: palette.surface,
     font: { family: FONT_FAMILY, color: palette.inkSecondary, size: 13 },

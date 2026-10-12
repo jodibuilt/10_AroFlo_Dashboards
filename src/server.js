@@ -13,6 +13,7 @@ const {
   buildInvoicingReport,
   buildKpiMatrixTasks,
 } = require('./views');
+const { logDataCheck } = require('./dataCheck');
 const { openDb: openAuthDb } = require('./auth/db');
 const { seedFirstAdmin } = require('./auth/seed');
 const { createAuthRouter } = require('./auth/routes');
@@ -165,7 +166,7 @@ app.post('/api/refresh', requireApiAuth, async (req, res) => {
   }
   lastManualRefreshAt = Date.now();
   res.json({ started: true });
-  cache.refreshAll();
+  cache.refreshAll().then(() => logDataCheck(cache));
 });
 
 // SPA fallback: any GET that isn't /api or /auth gets the app shell;
@@ -179,9 +180,12 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(frontendDistDir, 'index.html'));
 });
 
+// Nothing is fetched from AroFlo here, or on a timer: the reports stay empty
+// until someone presses Refresh (POST /api/refresh above). AroFlo's daily
+// request allowance is shared with other tools, so this app only spends it
+// when asked to.
 app.listen(config.port, () => {
-  logger.info(`AroFlo Dashboards listening on http://localhost:${config.port}`);
-  cache.startAutoRefresh();
+  logger.info(`AroFlo Dashboards listening on http://localhost:${config.port} — AroFlo data loads when someone presses Refresh`);
 });
 
 function shutdown() {

@@ -1,5 +1,6 @@
 const { parseAroFloDateTime } = require('./aroflo/aroFloDates');
 const config = require('./config');
+const { resolvePriority } = require('./priorities');
 
 function safeParseDate(value) {
   if (!value || !String(value).trim()) return null;
@@ -55,11 +56,16 @@ function earliestLabourStart(raw) {
 // Tasks.client is {clientid, clientname} but Invoices.client is
 // {orgid, orgname} — a real inconsistency in AroFlo's own v1 schema, not a
 // normalization bug here.
-function normalizeTask(raw) {
+//
+// `priorities` is the account's own priority list by id (src/priorities.js),
+// used to put a name and a P-scale level to the id the task carries.
+function normalizeTask(raw, priorities = new Map()) {
   const status = cleanStr(raw.status);
   const dueDate = cleanStr(raw.duedate) || null;
   const isComplete = config.completedTaskStatuses.includes(status.toLowerCase());
   const overdue = isPastDate(dueDate) && !isComplete;
+  const priorityId = cleanStr(raw.priority);
+  const priority = resolvePriority(priorityId, priorities);
   return {
     taskId: raw.taskid,
     jobNumber: cleanStr(raw.jobnumber),
@@ -74,8 +80,11 @@ function normalizeTask(raw) {
     // raw field as dueDate above — kept as a separate named field to match
     // aroflo_dash's own vocabulary (required_completed_date), which the KPI
     // module's logic was ported from.
-    priorityId: cleanStr(raw.priority),
-    priorityLabel: config.kpi.priorityLabels[cleanStr(raw.priority)] || null,
+    priorityId,
+    // priorityLabel is what AroFlo calls the priority ("AP1"); priorityCode
+    // is its level on the P1-P5 / PM scale ("P1"), or null if it has none.
+    priorityLabel: priority.label,
+    priorityCode: priority.code,
     requestDate: cleanStr(raw.requestdate) || null,
     actualStartDate: earliestLabourStart(raw),
     completedDate: cleanStr(raw.completeddate) || null,

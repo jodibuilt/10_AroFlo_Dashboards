@@ -3,10 +3,13 @@ import { Palette } from '../theme';
 import { KpiCard } from '../components/KpiCard';
 import { InvoicingReportResponse } from '../types';
 import { fetchInvoicingReport } from '../../services/reportingInvoicing';
+import { formatCoverage } from '../../services/reportingRefresh';
 import { buildInvoicingExcel, buildInvoicingPdf } from './exportInvoicing';
+import { ClientMultiSelect, decodeClients, encodeClients } from '../components/ClientMultiSelect';
 
+// The client groups this report sorts every invoice into. Any number can be
+// picked; none is all of them ('all').
 const VIEW_OPTIONS = [
-  { value: 'all', label: 'All clients' },
   { value: 'Ventia', label: 'Ventia' },
   { value: 'SAHA', label: 'SAHA' },
   { value: 'others', label: 'Projects / Other' },
@@ -39,6 +42,10 @@ function fmtDate(v: string | null): string {
 interface Props {
   palette: Palette;
   striped: boolean;
+  // Changes when the server has re-read AroFlo; the report is fetched again.
+  dataVersion?: number;
+  // The first day the loaded data covers (YYYY/MM/DD), if known.
+  coverageFrom?: string | null;
 }
 
 interface Col {
@@ -49,7 +56,7 @@ interface Col {
   date?: boolean;
 }
 
-export const InvoicingTab: React.FC<Props> = ({ palette, striped }) => {
+export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 0, coverageFrom = null }) => {
   const [view, setView] = useState(() => loadLocal('reporting-invoicing-view', 'all'));
   const [dateFrom, setDateFrom] = useState(() => loadLocal('reporting-invoicing-from', firstOfMonth()));
   const [dateTo, setDateTo] = useState(() => loadLocal('reporting-invoicing-to', todayStr()));
@@ -72,6 +79,13 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped }) => {
 
   const from = dateFrom > dateTo ? dateTo : dateFrom;
 
+  // `view` stays one string — 'all', or the picked groups joined — which is
+  // what the report endpoint takes and what is remembered between visits.
+  const selectedGroups = useMemo(() => decodeClients(view, 'all').filter((v) => VIEW_OPTIONS.some((o) => o.value === v)), [view]);
+  // What the reports print for the selection.
+  const viewLabel =
+    selectedGroups.length > 1 ? selectedGroups.map((v) => VIEW_OPTIONS.find((o) => o.value === v)?.label ?? v).join(' + ') : view;
+
   useEffect(() => {
     let cancelled = false;
     setExcelBlob(null);
@@ -86,16 +100,19 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped }) => {
     return () => {
       cancelled = true;
     };
-  }, [view, from, dateTo]);
+  }, [view, from, dateTo, dataVersion]);
 
+  // What "Paid" can be trusted for. An invoice only counts as paid when a
+  // payment record for it was loaded, so anything short in the payments
+  // shows up here as invoices wrongly reading unpaid — say which it is.
   const paymentsNote = useMemo(() => {
     if (!data) return '';
-    if (data.meta.paymentsCoverFullRange) return 'Payment records loaded for the selected range.';
-    return (
-      `AroFlo's Payments zone only reliably returns roughly the last 30 days ` +
-      `(${data.meta.paymentsRecordCount} payment record${data.meta.paymentsRecordCount === 1 ? '' : 's'} loaded). ` +
-      `Invoices paid before that window show as unpaid here.`
-    );
+    const { paymentsCoverFullRange, paymentsError, paymentsWarning, paymentsRecordCount } = data.meta;
+    if (paymentsCoverFullRange) return 'Payment records are loaded for the same period as the invoices.';
+    if (paymentsError) return `Payments could not be loaded (${paymentsError}), so paid invoices show as unpaid here.`;
+    if (paymentsWarning) return `Payments: ${paymentsWarning}.`;
+    if (paymentsRecordCount === 0) return 'AroFlo returned no payment records, so every invoice shows as unpaid here.';
+    return '';
   }, [data]);
 
   async function prepare() {
@@ -103,7 +120,7 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped }) => {
     setBusy(true);
     setExportError(null);
     try {
-      const args = { data: data.data, meta: data.meta, view, dateFrom: from, dateTo, paymentsNote };
+      const args = { data: data.data, meta: data.meta, view: viewLabel, dateFrom: from, dateTo, paymentsNote };
       setExcelBlob(await buildInvoicingExcel(args));
       setPdfBlob(await buildInvoicingPdf(args));
     } catch (e) {
@@ -131,7 +148,9 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped }) => {
         <h3 className="text-[14px] font-semibold mb-2" style={{ color: palette.inkPrimary }}>
           {title}
         </h3>
-        <div className="overflow-auto rounded-md" style={{ border: `1px solid ${palette.border}`, maxHeight: 460 }}>
+        {/* The surface background is what makes the stripes show: striped
+            rows are the page colour, so on a bare page they vanish. */}
+        <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 460 }}>
           <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
             <thead>
               <tr>
@@ -188,21 +207,15 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped }) => {
     <div className="space-y-6">
       {/* Filters */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <label className="md:col-span-2 flex flex-col gap-1 text-[12px]" style={{ color: palette.inkSecondary }}>
+        <div className="md:col-span-2 flex flex-col gap-1 text-[12px]" style={{ color: palette.inkSecondary }}>
           Client
-          <select
-            value={view}
-            onChange={(e) => setView(e.target.value)}
-            className="px-2 py-1.5 rounded-md text-[13px]"
-            style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
-          >
-            {VIEW_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          <ClientMultiSelect
+            palette={palette}
+            options={VIEW_OPTIONS}
+            selected={selectedGroups}
+            onChange={(next) => setView(encodeClients(next, 'all'))}
+          />
+        </div>
         <label className="flex flex-col gap-1 text-[12px]" style={{ color: palette.inkSecondary }}>
           Invoiced from
           <input
@@ -227,9 +240,50 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped }) => {
         </label>
       </div>
       <p className="text-[12px]" style={{ color: palette.inkMuted }}>
-        Date range filters on <b>Date Invoiced</b>. AroFlo returns payment records only for roughly the last 30 days
-        (rolling, anchored to today) — not the last 30 days of the selected period — so “Paid” can understate older invoices.
+        Date range filters on <b>Date Invoiced</b>. An invoice counts as paid when payments recorded against it in AroFlo
+        add up to its total.
       </p>
+      {coverageFrom && from.replace(/-/g, '/') < coverageFrom && (
+        <p className="text-[12px]" style={{ color: palette.statusWarningText }}>
+          AroFlo data is only loaded from {formatCoverage(coverageFrom)}, so invoices raised before then are missing from
+          these figures.
+        </p>
+      )}
+
+      {/* What each figure means and what it leaves out, in one place. */}
+      <details className="text-[12px]" style={{ color: palette.inkSecondary }}>
+        <summary className="cursor-pointer font-semibold">How these figures are worked out, and what they leave out</summary>
+        <ul className="list-disc ml-5 mt-2 space-y-1">
+          <li>
+            <b>Period covered.</b>{' '}
+            {coverageFrom
+              ? `Only invoices dated since ${formatCoverage(coverageFrom)} are loaded.`
+              : 'Only recent invoices are loaded — the bar at the top says from when.'}{' '}
+            Anything older is not in any figure on this page.
+          </li>
+          <li>
+            <b>Which month an invoice belongs to.</b> Its Date Invoiced. An invoice with no date yet is in no date range.
+          </li>
+          <li>
+            <b>Submitted</b> — invoices whose status is Approved or Processed. Drafts (Not Started, Pending Approval) are
+            not counted as submitted; they appear in “By status”.
+          </li>
+          <li>
+            <b>Submitted value</b> — the total including GST, with the ex-GST total beside it.
+          </li>
+          <li>
+            <b>Client groups.</b> Ventia, SAHA (South Australian Housing Trust), and everything else as Projects / Other —
+            by the client name on the invoice.
+          </li>
+          <li>
+            <b>Paid</b> — payments recorded against the invoice in AroFlo add up to its total. A part-paid invoice counts
+            as unpaid. The note below says whether all the payments for the period were loaded.
+          </li>
+          <li>
+            <b>How fresh.</b> As of the time in the bar at the top. Nothing updates until someone presses Refresh.
+          </li>
+        </ul>
+      </details>
 
       {error && (
         <div className="p-3 rounded-md text-[13px]" style={{ background: 'rgba(220,38,38,0.10)', color: palette.statusCritical }}>
@@ -363,7 +417,7 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped }) => {
           </div>
 
           <p className="text-[11px] pt-2" style={{ color: palette.inkMuted, borderTop: `1px solid ${palette.border}` }}>
-            Source: AroFlo live API
+            Source: AroFlo API
             {data.meta.lastFetchedAt ? ` · data as of ${fmtDate(data.meta.lastFetchedAt.slice(0, 10))}` : ''} ·{' '}
             {fmtDate(from)} – {fmtDate(dateTo)} · Generated {todayStr()}
           </p>
