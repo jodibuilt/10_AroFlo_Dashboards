@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Users — AroFlo Dashboards</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="admin.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>User Accounts</h1>
+    </div>
+    <div class="topbar-right">
+      <a href="/" class="btn btn-secondary">Back to dashboards</a>
+      <button id="logoutBtn" class="btn btn-secondary">Logout</button>
+    </div>
+  </header>
+
+  <div class="admin-table-wrap" id="adminRoot">
+    <p id="notAuthorized" class="limitation-note" style="display:none;">Not authorized — admin access required.</p>
+
+    <div id="adminContent" style="display:none;">
+      <p class="section-note">Create user, then share the temporary password with them directly — there's no email/reset-link flow yet.</p>
+      <form id="createForm" class="admin-form-row">
+        <input id="newUsername" type="text" placeholder="Username" aria-label="Username" required />
+        <input id="newDisplayName" type="text" placeholder="Display name" aria-label="Display name" required />
+        <input id="newPassword" type="password" placeholder="Temporary password (min 8 chars)" aria-label="Temporary password" required />
+        <select id="newRole" aria-label="Role">
+          <option value="user">User</option>
+          <option value="admin">Admin</option>
+        </select>
+        <button type="submit" class="btn">Create user</button>
+      </form>
+      <p class="auth-error" id="createError" role="alert"></p>
+
+      <table>
+        <thead>
+          <tr><th>Username</th><th>Display name</th><th>Role</th><th>Created</th><th></th></tr>
+        </thead>
+        <tbody id="usersBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="admin.js"></script>
+</body>
+</html>

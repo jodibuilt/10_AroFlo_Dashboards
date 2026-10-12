@@ -1,0 +1,7 @@
+node_modules/
+.env
+data/
+frontend/dist/
+# Filled-in copy of deploy/appsettings.example.json — holds real secrets.
+deploy/appsettings.json
+.claude
