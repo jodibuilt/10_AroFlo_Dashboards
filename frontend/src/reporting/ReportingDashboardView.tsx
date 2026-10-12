@@ -18,7 +18,7 @@ function loadLocal<T>(key: string, fallback: T): T {
 }
 
 const SUB_TABS: { id: SubTab; label: string; subtitle: string }[] = [
-  { id: 'matrix', label: 'KPI Matrix', subtitle: 'Client SLA compliance template — upload an AroFlo task export (CSV)' },
+  { id: 'matrix', label: 'KPI Matrix', subtitle: 'Client SLA compliance template — live from the AroFlo API, or an uploaded task export (CSV)' },
   { id: 'analytics', label: 'Work Orders', subtitle: 'Live work-order analytics from the AroFlo API' },
   { id: 'invoicing', label: 'Invoicing', subtitle: 'Invoiced / paid / outstanding by client, from the AroFlo API' },
 ];
@@ -26,22 +26,37 @@ const SUB_TABS: { id: SubTab; label: string; subtitle: string }[] = [
 interface Props {
   hiddenSubTabs?: string[];
   isAdmin?: boolean;
+  // Set when the host app picks the pane itself (AroFlo Dashboards lists the
+  // panes in its sidebar) — the pane follows this and the in-page switcher
+  // isn't rendered.
+  tab?: SubTab;
+  // Set when the host app owns the light/dark switch (AroFlo Dashboards has
+  // one in its header, for the whole app) — the page follows this and its
+  // own switch isn't rendered.
+  themeMode?: ThemeMode;
 }
 
 // Shell for the Reports tab. Owns theme + striped + which sub-tab is active,
 // and the report config (for the title). The two panes — the CSV-driven KPI
 // Matrix and the live Analytics dashboard — are fully separate below.
-export const ReportingDashboardView: React.FC<Props> = ({ hiddenSubTabs = [], isAdmin = false }) => {
+export const ReportingDashboardView: React.FC<Props> = ({
+  hiddenSubTabs = [],
+  isAdmin = false,
+  tab,
+  themeMode: hostThemeMode,
+}) => {
   const [config, setConfig] = useState<ReportingConfig | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadLocal('reporting-theme', 'system' as ThemeMode));
+  const [ownThemeMode, setThemeMode] = useState<ThemeMode>(() => loadLocal('reporting-theme', 'system' as ThemeMode));
+  const themeMode = hostThemeMode ?? ownThemeMode;
   const [striped, setStriped] = useState(() => loadLocal('reporting-striped', true));
-  const [subTab, setSubTab] = useState<SubTab>(() => {
+  const [ownSubTab, setSubTab] = useState<SubTab>(() => {
     const saved = loadLocal('reporting-subtab', 'matrix' as SubTab);
     // Guard against a stale id from a previous build (e.g. the retired
     // 'projects-sim') left in localStorage.
     return SUB_TABS.some((t) => t.id === saved) ? saved : 'matrix';
   });
+  const subTab = tab ?? ownSubTab;
 
   const hidden = new Set(hiddenSubTabs);
   const isHidden = (id: SubTab) => hidden.has(`reports:${id}`);
@@ -88,23 +103,25 @@ export const ReportingDashboardView: React.FC<Props> = ({ hiddenSubTabs = [], is
               <input type="checkbox" checked={striped} onChange={(e) => setStriped(e.target.checked)} />
               Striped table rows
             </label>
-            <div className="flex gap-1 rounded-md p-0.5" style={{ border: `1px solid ${palette.border}` }}>
-              {(['light', 'dark', 'system'] as ThemeMode[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setThemeMode(m)}
-                  className="px-2 py-1 rounded-md text-[11px] font-semibold capitalize"
-                  style={{ background: themeMode === m ? palette.border : 'transparent', color: palette.inkPrimary }}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
+            {!hostThemeMode && (
+              <div className="flex gap-1 rounded-md p-0.5" style={{ border: `1px solid ${palette.border}` }}>
+                {(['light', 'dark', 'system'] as ThemeMode[]).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setThemeMode(m)}
+                    className="px-2 py-1 rounded-md text-[11px] font-semibold capitalize"
+                    style={{ background: themeMode === m ? palette.border : 'transparent', color: palette.inkPrimary }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
         {/* Sub-tab switcher */}
-        {visibleSubTabs.length > 0 && (
+        {!tab && visibleSubTabs.length > 0 && (
           <div className="inline-flex gap-1 rounded-md p-0.5" style={{ border: `1px solid ${palette.border}`, background: palette.surface }}>
             {visibleSubTabs.map((t) => {
               const th = isHidden(t.id);

@@ -137,7 +137,18 @@ function periodOf(dt: Date | null): string | null {
 // --------------------------------------------------------------------------
 
 export function buildDataset(csvText: string, now: Date = new Date()): { rows: KpiTaskRow[]; diag: Diagnostics } {
-  const { headers, rows: raw } = parseCsv(csvText);
+  const { headers, rows } = parseCsv(csvText);
+  return buildDatasetFromRows(headers, rows, now);
+}
+
+// The same pipeline for rows that didn't come from a CSV file: the live
+// AroFlo feed arrives already keyed by the export's column names
+// (services/reportingKpiMatrix.ts).
+export function buildDatasetFromRows(
+  headers: string[],
+  raw: CsvRow[],
+  now: Date = new Date(),
+): { rows: KpiTaskRow[]; diag: Diagnostics } {
   const headerSet = new Set(headers);
   const hasDescription = headerSet.has(DESCRIPTION_COLUMN);
 

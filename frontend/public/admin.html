@@ -8,6 +8,16 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="admin.css" />
+  <script>
+    // Same light/dark choice as the main app (its header switch saves it).
+    (function () {
+      try {
+        var mode = JSON.parse(localStorage.getItem('reporting-theme') || 'null');
+        var dark = mode === 'dark' || (mode !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('dash-dark', dark);
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <header class="topbar">

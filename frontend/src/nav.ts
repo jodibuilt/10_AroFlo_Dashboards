@@ -1,6 +1,7 @@
-// Catalog of the Reports / Tools sub-tabs, so the admin "Manage navigation"
-// modal can list them and each shell can hide the ones an admin has turned
-// off. Keys are namespaced and match the ids used inside each shell.
+// Catalog of the Tools sub-tabs, so the admin "Manage navigation" modal can
+// list them and the shell can hide the ones an admin has turned off. Keys
+// are namespaced and match the ids used inside the shell. The report panes
+// aren't here — in this app they are sidebar tabs (NAV_CATEGORIES).
 export interface SubTabEntry {
   key: string;
   label: string;
@@ -8,9 +9,6 @@ export interface SubTabEntry {
 }
 
 export const SUB_TAB_CATALOG: SubTabEntry[] = [
-  { key: 'reports:matrix', label: 'KPI Matrix', group: 'Reports' },
-  { key: 'reports:analytics', label: 'Work Orders', group: 'Reports' },
-  { key: 'reports:invoicing', label: 'Invoicing', group: 'Reports' },
   { key: 'tools:wo-consolidator', label: 'Ventia Work Order Consolidator', group: 'Tools' },
 ];
 

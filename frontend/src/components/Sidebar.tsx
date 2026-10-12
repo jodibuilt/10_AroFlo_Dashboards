@@ -32,19 +32,24 @@ export interface NavCategory {
 }
 
 // Same collapsible-category structure as test_all_aroflo's sidebar, cut down
-// to the two sections this app ships.
+// to the two sections this app ships. The report panes are listed directly
+// rather than as sub-tabs of a single "Reports" tab.
 export const NAV_CATEGORIES: NavCategory[] = [
   {
     key: 'dashboards',
     label: 'Dashboards',
     icon: 'space_dashboard',
-    items: [{ tab: 'reports', label: 'Reports', icon: 'analytics' }],
+    items: [
+      { tab: 'matrix', label: 'KPI Matrix', icon: 'table_chart' },
+      { tab: 'analytics', label: 'Work Orders', icon: 'analytics' },
+      { tab: 'invoicing', label: 'Invoicing', icon: 'receipt_long' },
+    ],
   },
   {
     key: 'tools',
     label: 'Tools',
     icon: 'build',
-    items: [{ tab: 'tools', label: 'Tools', icon: 'build' }],
+    items: [{ tab: 'tools', label: 'WO Consolidator', icon: 'call_merge' }],
   },
 ];
 

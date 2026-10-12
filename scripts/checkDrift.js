@@ -28,7 +28,6 @@ const VERBATIM = [
   'frontend/tsconfig.json',
   'frontend/src/main.tsx',
   'frontend/src/index.css',
-  'frontend/src/nav.ts',
   'frontend/src/lib/csv.ts',
   'frontend/src/hooks/useMediaQuery.ts',
   'frontend/src/components/Modal.tsx',
@@ -46,11 +45,15 @@ const VERBATIM = [
   'frontend/src/tools',
 ];
 
-// Under a VERBATIM directory but deliberately edited here (the overdue
-// table's "Assigned" column is dropped — see README).
+// Under a VERBATIM directory but deliberately edited here: the overdue
+// table's "Assigned" column is dropped, the report pane and theme come from
+// the app shell, and the KPI Matrix reads live AroFlo data — see README.
 const EDITED = new Set([
   'frontend/src/reporting/types.ts',
   'frontend/src/reporting/overdueAgeing/OverdueAgeingSection.tsx',
+  'frontend/src/reporting/ReportingDashboardView.tsx',
+  'frontend/src/reporting/kpiMatrix/KpiMatrixSection.tsx',
+  'frontend/src/reporting/kpiMatrix/ingest.ts',
 ]);
 
 function walk(rel) {

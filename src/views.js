@@ -352,6 +352,34 @@ function buildInvoicingReport(cache, { view, dateFrom, dateTo } = {}) {
   };
 }
 
+// Task rows for the KPI Compliance Matrix's live mode. The matrix is computed
+// in the browser (frontend/src/reporting/kpiMatrix) by the same engine that
+// reads an uploaded CSV export, so this only hands over the fields that
+// export carries — every task, unfiltered: the matrix does its own month /
+// tier / client filtering. Not here because AroFlo's API doesn't expose
+// them: a task's invoice date, checklists and compliance forms (KPIs 12-14).
+function buildKpiMatrixTasks(cache) {
+  const { records, lastFetchedAt, error } = cache.get('jobs');
+  return {
+    data: records.map((t) => ({
+      jobNumber: t.jobNumber,
+      taskName: t.taskName,
+      client: t.client,
+      status: t.status,
+      substatus: t.substatus,
+      // The raw id for a priority with no label configured, so the matrix's
+      // diagnostics can name it instead of silently dropping the tier.
+      priority: t.priorityLabel || t.priorityId,
+      requestedAt: t.requestDateTime || t.requestDate,
+      dueAt: t.dueDateTime || t.dueDate,
+      startedAt: t.actualStartDate,
+      completedAt: t.completedDateTime || t.completedDate,
+      description: t.description,
+    })),
+    meta: { lastFetchedAt, error },
+  };
+}
+
 // Distinct real client names present in the loaded task set — powers the
 // Reports page's "add other clients" filter options alongside the literal
 // Ventia/SAHA entries from config.reporting.targetClients.
@@ -366,4 +394,5 @@ module.exports = {
   buildReportingClients,
   buildOverdueAgeing,
   buildInvoicingReport,
+  buildKpiMatrixTasks,
 };

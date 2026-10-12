@@ -81,6 +81,13 @@ function normalizeTask(raw) {
     completedDate: cleanStr(raw.completeddate) || null,
     requiredCompletedDate: dueDate,
     locationName: cleanStr(raw.tasklocation?.locationname) || null,
+    // KPI Compliance Matrix, live mode (views.buildKpiMatrixTasks): the
+    // date-times behind the dates above — a blank one comes back as " " —
+    // and the description its failure categoriser reads.
+    requestDateTime: cleanStr(raw.requestdatetime) || null,
+    dueDateTime: cleanStr(raw.duedatetime) || null,
+    completedDateTime: cleanStr(raw.completeddatetime) || null,
+    description: cleanStr(raw.description),
   };
 }
 

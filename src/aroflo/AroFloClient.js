@@ -47,6 +47,16 @@ class AroFloClient {
     this.hostIp = hostIp || undefined;
 
     this.http = axios.create({ baseURL: baseUrl, timeout: 30000 });
+    // Read-only, enforced rather than just intended: this is the app's only
+    // connection to AroFlo, and it refuses to send anything but a GET. A
+    // later change that tries a write fails here, before the request leaves.
+    this.http.interceptors.request.use((request) => {
+      const method = String(request.method || 'get').toUpperCase();
+      if (method !== 'GET') {
+        throw new Error(`AroFloClient is read-only — refused to send a ${method} request`);
+      }
+      return request;
+    });
 
     // AroFlo's documented limits are 3 req/s and 120 req/min; chain two
     // limiters so a full cache refresh respects both.

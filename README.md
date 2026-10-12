@@ -4,14 +4,15 @@ The Reports and Tools sections of `test_all_aroflo`, as a standalone app.
 
 | Section | What's in it |
 |---|---|
-| **Reports** | KPI Matrix (CSV upload), Work Orders (live analytics, overdue & ageing, breakdowns, Excel/PDF export), Invoicing |
+| **Reports** | KPI Matrix (live, or from a CSV upload), Work Orders (live analytics, overdue & ageing, breakdowns, Excel/PDF export), Invoicing |
 | **Tools** | Ventia Work Order Consolidator |
 
 Everything else in `test_all_aroflo` — jobs, schedule, rollover, inventory,
 maps, the trigger engine, webhooks — is deliberately not here.
 
-**This app only reads from AroFlo.** Its API client has GET and nothing else
-(`src/aroflo/AroFloClient.js`), so no setting or bug can make it write.
+**This app only reads from AroFlo.** Its API client has GET and nothing else,
+and refuses to send any other kind of request (`src/aroflo/AroFloClient.js`),
+so no setting or bug can make it write.
 
 ## Run it locally
 
@@ -116,7 +117,7 @@ az webapp log tail -g $RG -n $APP
 In the log, look for `Refreshed Tasks`, `Refreshed Invoices` and
 `Refreshed Payments` with real counts. `Failed to refresh … Authentication
 Failed` means the AroFlo credentials in the app settings are wrong or revoked.
-Then sign in and open Reports → Work Orders.
+Then sign in and open Work Orders.
 
 Judge the deploy by `/healthz` and the log, not by the CLI's exit line. The
 earlier `test_all_aroflo` deploy printed "Site failed to start within 10 mins"
@@ -154,9 +155,29 @@ for this app and are not checked:
 | `frontend/src/App.tsx`, `components/Sidebar.tsx`, `components/Header.tsx`, `types.ts` | shell for two tabs; no quick-action or job search |
 | `frontend/public/admin.*` | the user-management page, served by the app |
 | `frontend/src/reporting/overdueAgeing/OverdueAgeingSection.tsx`, `reporting/types.ts` | the overdue table has no "Assigned" column |
+| `frontend/src/reporting/ReportingDashboardView.tsx` | takes its pane and its theme from the app shell (optional `tab` / `themeMode` props) and then hides its own switchers |
+| `frontend/src/reporting/kpiMatrix/KpiMatrixSection.tsx`, `kpiMatrix/ingest.ts` | the matrix reads live AroFlo work orders; a CSV upload is an optional override |
+| `frontend/src/nav.ts` | no Reports sub-tabs — the report panes are sidebar tabs here |
 
-Two behaviours differ from the Reports tab in `test_all_aroflo`:
+Only in this app: `src/dark.css`, `hooks/useThemeMode.ts` and
+`services/reportingKpiMatrix.ts` under `frontend/src`, and the
+`/api/reporting/kpi-matrix` route.
 
+Five behaviours differ from the Reports tab in `test_all_aroflo`:
+
+- **KPI Matrix, Work Orders and Invoicing are sidebar items** under
+  Dashboards, not sub-tabs of one Reports tab. Admins hide each one under
+  Manage navigation → Sidebar tabs.
+- **The KPI Matrix is live.** It reads work orders from the AroFlo cache
+  (`/api/reporting/kpi-matrix`) with no upload needed; uploading a CSV export
+  replaces the live data until it is cleared. Live mode measures KPIs 1–11
+  only — AroFlo's API has no invoice-to-task link, checklists or compliance
+  forms, so 12–14 read N/A unless a CSV is uploaded. "Commenced" is the first
+  labour entry logged on the job (the CSV uses Schedule Start), and a due date
+  with no time counts as due by the end of that day.
+- **Light / dark is app-wide.** The switch is in the header and covers the
+  shell, Tools, modals, login and the Manage users page, not just Reports.
+  Dark styling for everything outside Reports lives in `frontend/src/dark.css`.
 - **No "Assigned" column** in the overdue table. It was filled from staff
   assignments made on the Jobs and Map screens, which this app doesn't have.
 - **Delay reason** in the breakdown tables uses each work order's current

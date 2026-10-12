@@ -9,6 +9,26 @@
   --accent: #c85a24;
   --accent-hover: #b04f1e;
   --danger-text: #b42318;
+  --inset: #f1f5f9;
+  --note-bg: #fff4e5;
+  --note-border: #f0c179;
+  --note-text: #7a4a00;
+}
+
+/* Dark theme — the main app's switch. admin.html puts `dash-dark` on <html>
+   from the saved choice; values mirror src/dark.css. */
+:root.dash-dark {
+  color-scheme: dark;
+  --bg: #18181b;
+  --panel-bg: #27272a;
+  --border: #3f3f46;
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --danger-text: #fca5a5;
+  --inset: #323236;
+  --note-bg: #3a2c14;
+  --note-border: #7a5a1e;
+  --note-text: #fcd9a0;
 }
 
 * { box-sizing: border-box; }
@@ -78,9 +98,9 @@ body {
 .section-note { color: var(--text-muted); font-size: 13px; margin: 0 0 12px; }
 
 .limitation-note {
-  background: #fff4e5;
-  border: 1px solid #f0c179;
-  color: #7a4a00;
+  background: var(--note-bg);
+  border: 1px solid var(--note-border);
+  color: var(--note-text);
   padding: 10px 14px;
   border-radius: 6px;
   font-size: 13px;
@@ -100,7 +120,7 @@ table {
 thead th {
   text-align: left;
   padding: 10px 12px;
-  background: #f1f5f9;
+  background: var(--inset);
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   font-weight: 600;
@@ -111,4 +131,4 @@ tbody td {
   border-bottom: 1px solid var(--border);
 }
 tbody tr:last-child td { border-bottom: none; }
-tbody tr:hover { background: #f8fafc; }
+tbody tr:hover { background: var(--bg); }

@@ -8,8 +8,20 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet" />
+    <script>
+      // Apply the saved light/dark choice before first paint, so a dark-theme
+      // user doesn't get a white flash while the app loads. The app takes
+      // over from here in src/hooks/useThemeMode.ts.
+      (function () {
+        try {
+          var mode = JSON.parse(localStorage.getItem('reporting-theme') || 'null');
+          var dark = mode === 'dark' || (mode !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dash-dark', dark);
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body class="bg-[#f8fafc] text-[#18181b] antialiased">
+  <body class="bg-canvas text-ink antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

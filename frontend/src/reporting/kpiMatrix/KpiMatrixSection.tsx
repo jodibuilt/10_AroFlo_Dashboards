@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Plot, baseLayout, PLOT_CONFIG } from '../plotly';
 import { Palette } from '../theme';
 import {
@@ -6,17 +6,59 @@ import {
   CAPTION,
   ISSUES_FORM_NAME,
   JSA_NAME,
+  KpiDef,
+  Metric,
   TIER_WINDOW_LABEL,
   TIERS,
   Tier,
 } from './config';
-import { buildDataset, Diagnostics, KpiTaskRow } from './ingest';
-import { computeKpis, fmtPct, lateJobs, reconcile } from './engine';
+import { buildDataset, buildDatasetFromRows, Diagnostics, KpiTaskRow } from './ingest';
+import { computeKpis, fmtPct, KpiResult, lateJobs, reconcile } from './engine';
 import { buildKpiMatrixWorkbook } from './exportMatrix';
+import { fetchLiveKpiRows, LIVE_CLIENT_COLUMN, LiveKpiRows } from '../../services/reportingKpiMatrix';
 
 const CSV_KEY = 'kpi-matrix-csv';
 const NAME_KEY = 'kpi-matrix-filename';
 const MAX_PERSIST = 3_000_000; // chars
+
+// The matrix reads live work orders from AroFlo unless a CSV export has been
+// uploaded, which then takes over until it is cleared. Three KPIs need data
+// AroFlo's API doesn't expose — a task's invoice date, checklists, compliance
+// forms — so live mode reports them as N/A instead of scoring every job a
+// failure for a date it was never given.
+const LIVE_UNMEASURED: Set<Metric> = new Set(['invoice', 'jsa', 'issues']);
+
+function unmeasured(def: KpiDef): KpiResult {
+  return {
+    def,
+    count: 0,
+    total: 0,
+    ontimeCount: null,
+    ontimePool: null,
+    comment: 'Not in live AroFlo data — upload a CSV export to measure',
+    failCount: 0,
+    ontimeFailCount: null,
+    completionPct: null,
+    ontimePct: null,
+    scorePct: null,
+    late: 0,
+    measurable: false,
+    met: false,
+  };
+}
+
+const LIVE_CAPTION =
+  'On-time % covers jobs started within their response window and finished by their due date. ' +
+  'Commenced uses the first labour entry logged on the job. Contributing factors are conditions ' +
+  'present on the job, not confirmed causes of delay.';
+
+const LIVE_ASSUMPTIONS = [
+  'Commenced KPIs use the first labour entry logged on the job. A job with no labour logged is not scored for commencement.',
+  "Completion is judged against AroFlo's own Task Due Date, not the computed contractual SLA date. Those due dates are frequently defaulted / generous.",
+  'A due date with no time is treated as due by the end of that day.',
+  'KPIs 12–14 are not measured: AroFlo’s API does not link an invoice to its work order, or expose checklists and compliance forms. Upload a CSV export to measure them.',
+  'PM SLA window of 30 days was never confirmed with the client.',
+];
 
 function loadPersisted(): { csv: string; name: string } | null {
   try {
@@ -50,12 +92,43 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
   const [busy, setBusy] = useState(false);
   const [loadedAt, setLoadedAt] = useState<Date | null>(persisted ? new Date() : null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [live, setLive] = useState<LiveKpiRows | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [clientFilter, setClientFilter] = useState<string>('__all__');
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const isLive = !csvText;
 
   // Re-derived on every refresh so "overdue" / invoice-maturity checks use a
   // current clock, and every downstream useMemo recomputes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const now = useMemo(() => new Date(), [reloadNonce]);
+
+  // Live work orders, whenever no CSV is standing in for them. reloadNonce
+  // re-runs this for the Refresh button.
+  useEffect(() => {
+    if (!isLive) return;
+    let stale = false;
+    fetchLiveKpiRows()
+      .then((res) => {
+        if (stale) return;
+        setLive(res);
+        setLiveError(null);
+      })
+      .catch((e) => {
+        if (!stale) setLiveError(e instanceof Error ? e.message : 'Could not load work orders');
+      });
+    return () => {
+      stale = true;
+    };
+  }, [isLive, reloadNonce]);
+
+  const liveClients = useMemo(
+    () => (live ? [...new Set(live.rows.map((r) => r[LIVE_CLIENT_COLUMN]).filter(Boolean))].sort() : []),
+    [live],
+  );
+  // A client picked before a refresh may no longer be in the data.
+  const activeClient = liveClients.includes(clientFilter) ? clientFilter : '__all__';
 
   function resetFilters() {
     setMonthFilter('__recent__');
@@ -64,13 +137,15 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
   }
 
   const parsed = useMemo(() => {
-    if (!csvText) return null;
     try {
-      return buildDataset(csvText, now);
+      if (csvText) return buildDataset(csvText, now);
+      if (!live) return null;
+      const rows = activeClient === '__all__' ? live.rows : live.rows.filter((r) => r[LIVE_CLIENT_COLUMN] === activeClient);
+      return buildDatasetFromRows(live.headers, rows, now);
     } catch (e) {
       return { error: e instanceof Error ? e.message : 'Failed to parse CSV' } as { error: string };
     }
-  }, [csvText, now]);
+  }, [csvText, live, activeClient, now]);
 
   const dataset = parsed && !('error' in parsed) ? parsed : null;
   const datasetError = parsed && 'error' in parsed ? parsed.error : null;
@@ -97,8 +172,14 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
     });
   }, [dataset, resolvedMonth, tierFilter]);
 
-  const results = useMemo(() => computeKpis(filteredRows, now), [filteredRows, now]);
-  const problems = useMemo(() => reconcile(filteredRows, results, now), [filteredRows, results, now]);
+  const results = useMemo(() => {
+    const all = computeKpis(filteredRows, now);
+    return isLive ? all.map((r) => (LIVE_UNMEASURED.has(r.def.metric) ? unmeasured(r.def) : r)) : all;
+  }, [filteredRows, now, isLive]);
+  const problems = useMemo(
+    () => reconcile(filteredRows, isLive ? results.filter((r) => !LIVE_UNMEASURED.has(r.def.metric)) : results, now),
+    [filteredRows, results, now, isLive],
+  );
   const late = useMemo(() => lateJobs(filteredRows, now), [filteredRows, now]);
 
   const lateCats = useMemo(() => [...new Set(late.map((j) => j.category))].sort(), [late]);
@@ -142,10 +223,12 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
     setReloadNonce((n) => n + 1);
   }
 
+  // Dropping the upload hands the matrix back to live AroFlo data.
   function clearUpload() {
     setCsvText(null);
     setFileName(null);
     setLoadedAt(null);
+    resetFilters();
     try {
       localStorage.removeItem(CSV_KEY);
       localStorage.removeItem(NAME_KEY);
@@ -174,6 +257,8 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
 
   const h2 = 'text-[1.05rem] font-semibold pb-1 mb-1';
   const cardStyle: React.CSSProperties = { background: palette.surface, border: `1px solid ${palette.border}` };
+  const outlineButton: React.CSSProperties = { border: `1px solid ${palette.border}`, color: palette.inkPrimary };
+  const liveEmpty = isLive && live !== null && live.rows.length === 0;
 
   return (
     <div>
@@ -181,10 +266,10 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
         KPI Compliance Matrix
       </h2>
       <p className="text-[12px] mb-3" style={{ color: palette.inkMuted }}>
-        {CAPTION}
+        {isLive ? LIVE_CAPTION : CAPTION}
       </p>
 
-      {/* Upload control */}
+      {/* Data source — live AroFlo work orders, or an uploaded CSV export */}
       <div className="rounded-md p-4 mb-4 flex flex-wrap items-center gap-3" style={cardStyle}>
         <input
           ref={fileRef}
@@ -197,18 +282,63 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
             e.target.value = '';
           }}
         />
+        {isLive && (
+          <>
+            <span className="text-[12px] font-semibold" style={{ color: palette.inkPrimary }}>
+              Live from AroFlo
+            </span>
+            <button
+              onClick={() => setReloadNonce((n) => n + 1)}
+              className="px-3 py-1.5 rounded-md text-[12px] font-semibold inline-flex items-center gap-1"
+              style={outlineButton}
+              title="Re-read the latest work orders the server holds from AroFlo"
+            >
+              <span className="material-symbols-outlined text-[16px]">refresh</span>
+              Refresh
+            </button>
+            {live && (
+              <span className="text-[12px]" style={{ color: palette.inkSecondary }}>
+                {live.rows.length.toLocaleString()} work orders
+                {live.lastFetchedAt && (
+                  <span style={{ color: palette.inkMuted }}>
+                    {' '}
+                    · as of {new Date(live.lastFetchedAt).toLocaleTimeString()}
+                  </span>
+                )}
+              </span>
+            )}
+            {liveClients.length > 1 && (
+              <label className="text-[12px] inline-flex items-center gap-2" style={{ color: palette.inkSecondary }}>
+                Client
+                <select
+                  value={activeClient}
+                  onChange={(e) => setClientFilter(e.target.value)}
+                  className="px-2 py-1 rounded-md text-[12px]"
+                  style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
+                >
+                  <option value="__all__">All clients</option>
+                  {liveClients.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </>
+        )}
         <button
           onClick={() => fileRef.current?.click()}
           className="px-3 py-1.5 rounded-md text-[12px] font-semibold"
-          style={{ background: palette.accentBlue, color: '#fff' }}
+          style={isLive ? outlineButton : { background: palette.accentBlue, color: '#fff' }}
         >
-          {csvText ? 'Replace CSV' : 'Upload AroFlo CSV export'}
+          {csvText ? 'Replace CSV' : 'Upload a CSV instead'}
         </button>
         {csvText && (
           <button
             onClick={refreshData}
             className="px-3 py-1.5 rounded-md text-[12px] font-semibold inline-flex items-center gap-1"
-            style={{ border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
+            style={outlineButton}
             title="Re-parse the current file and reset filters"
           >
             <span className="material-symbols-outlined text-[16px]">refresh</span>
@@ -224,18 +354,20 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
               )}
             </span>
             <button onClick={clearUpload} className="text-[12px] underline" style={{ color: palette.inkMuted }}>
-              clear
+              clear — back to live data
             </button>
           </>
         )}
-        {!csvText ? (
-          <span className="text-[12px]" style={{ color: palette.inkMuted }}>
-            Export tasks from AroFlo (the 20-column task export; include the Description column for failure
-            categorisation), then upload the CSV here. This section is independent of the live-data filters above.
+        {isLive ? (
+          <span className="text-[12px] w-full" style={{ color: palette.inkMuted }}>
+            Read straight from AroFlo — no upload needed. KPIs 12–14 need invoice, checklist and compliance-form data
+            the AroFlo API doesn’t expose; to measure those, upload the AroFlo task export (the 20-column one, with the
+            Description column).
           </span>
         ) : (
           <span className="text-[12px] w-full" style={{ color: palette.inkMuted }}>
-            Edited the file? Re-pick it with <b>Replace CSV</b> — the browser can’t re-read a file from disk on its own.
+            Showing the uploaded file instead of live AroFlo data. Edited the file? Re-pick it with <b>Replace CSV</b> —
+            the browser can’t re-read a file from disk on its own.
           </span>
         )}
       </div>
@@ -250,8 +382,29 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
           {datasetError}
         </p>
       )}
+      {isLive && liveError && (
+        <p className="text-[12px] mb-3" style={{ color: palette.statusCritical }}>
+          Could not load work orders from the server: {liveError}
+        </p>
+      )}
+      {isLive && live?.error && (
+        <p className="text-[12px] mb-3" style={{ color: palette.statusCritical }}>
+          AroFlo’s last refresh failed ({live.error})
+          {live.rows.length > 0 ? ' — showing the work orders that loaded before it.' : '.'}
+        </p>
+      )}
+      {isLive && !live && !liveError && (
+        <p className="text-[13px] mb-3" style={{ color: palette.inkMuted }}>
+          Loading work orders from AroFlo…
+        </p>
+      )}
+      {liveEmpty && (
+        <p className="text-[13px] mb-3" style={{ color: palette.inkMuted }}>
+          No work orders have loaded from AroFlo yet. Upload a CSV export to use the matrix in the meantime.
+        </p>
+      )}
 
-      {dataset && (
+      {dataset && !liveEmpty && (
         <>
           {/* Filters */}
           <div className="flex flex-wrap items-end gap-4 mb-4">
@@ -318,7 +471,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
             </button>
           </div>
 
-          {showDiag && <DiagnosticsPanel diag={dataset.diag} palette={palette} />}
+          {showDiag && <DiagnosticsPanel diag={dataset.diag} palette={palette} live={isLive} />}
 
           {problems.length > 0 && (
             <div
@@ -406,14 +559,16 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
           <details className="mt-4 text-[12px]" style={{ color: palette.inkSecondary }}>
             <summary className="cursor-pointer font-semibold">Assumptions &amp; known limitations</summary>
             <ul className="list-disc ml-5 mt-2 space-y-1">
-              {ASSUMPTIONS.map((a) => (
+              {(isLive ? LIVE_ASSUMPTIONS : ASSUMPTIONS).map((a) => (
                 <li key={a}>{a}</li>
               ))}
               <li>
                 Categories are conditions present on the job, not confirmed causes of delay. The proper fix is a
                 mandatory delay-reason field in AroFlo.
               </li>
-              <li>Completed-only exports make the “%” column read 100% by construction, not by performance.</li>
+              {!isLive && (
+                <li>Completed-only exports make the “%” column read 100% by construction, not by performance.</li>
+              )}
             </ul>
           </details>
         </>
@@ -426,7 +581,10 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped }) => {
 // Sub-components
 // --------------------------------------------------------------------------
 
-const DiagnosticsPanel: React.FC<{ diag: Diagnostics; palette: Palette }> = ({ diag, palette }) => {
+// `live` drops the checks that only make sense for an uploaded export: its
+// shape (completed-only / open-only), and the checklist / compliance-form
+// names behind KPIs 13-14, which live data never carries.
+const DiagnosticsPanel: React.FC<{ diag: Diagnostics; palette: Palette; live: boolean }> = ({ diag, palette, live }) => {
   const warn = (t: string) => (
     <p key={t} className="text-[12px]" style={{ color: palette.statusWarningText }}>
       ⚠ {t}
@@ -439,26 +597,35 @@ const DiagnosticsPanel: React.FC<{ diag: Diagnostics; palette: Palette }> = ({ d
         duplicates removed <b>{diag.duplicatesRemoved}</b> ({diag.duplicateJobNumbers} duplicate job numbers)
       </div>
       <div>
-        Rows with null tier <b>{diag.rowsNullTier}</b> · with a completion date <b>{diag.rowsWithCompletion}</b> · with a
-        schedule start <b>{diag.rowsWithScheduleStart}</b>
+        Rows with null tier <b>{diag.rowsNullTier}</b> · with a completion date <b>{diag.rowsWithCompletion}</b> · with a{' '}
+        {live ? 'logged labour start' : 'schedule start'} <b>{diag.rowsWithScheduleStart}</b>
       </div>
       {diag.missingColumns.length > 0 && warn(`Missing expected columns: ${diag.missingColumns.join(', ')}`)}
       {diag.unmappedPriorities.length > 0 &&
-        warn(`Unmapped Priority values (new AroFlo wording?): ${diag.unmappedPriorities.join(' | ')}`)}
+        warn(
+          live
+            ? `Priorities with no tier (label them in KPI_PRIORITY_LABELS_JSON): ${diag.unmappedPriorities.join(' | ')}`
+            : `Unmapped Priority values (new AroFlo wording?): ${diag.unmappedPriorities.join(' | ')}`,
+        )}
       {!diag.hasDescriptionColumn &&
         warn('No Description column — every row falls to "reason not recorded" and categorisation is disabled.')}
-      {diag.completedOnlyExport &&
-        warn('Looks like a completed-tasks export (~100% have completions): "%" reads 100% by construction.')}
-      {diag.looksOpenTasks && warn('Looks like an open-tasks export: most rows have no completion date.')}
-      <div>
-        Checklist Name values: <b>{diag.checklistNames.join(', ') || 'none'}</b>
-      </div>
-      <div>
-        Compliance Form Name values: <b>{diag.complianceFormNames.join(', ') || 'none'}</b>
-      </div>
-      {diag.jsaNameMatches === 0 && warn(`KPI 13 unmeasured: no Checklist Name equals "${JSA_NAME}" (fix JSA_NAME in config).`)}
-      {diag.issuesNameMatches === 0 &&
-        warn(`KPI 14 unmeasured: no Compliance Form Name equals "${ISSUES_FORM_NAME}" (fix ISSUES_FORM_NAME in config).`)}
+      {!live && (
+        <>
+          {diag.completedOnlyExport &&
+            warn('Looks like a completed-tasks export (~100% have completions): "%" reads 100% by construction.')}
+          {diag.looksOpenTasks && warn('Looks like an open-tasks export: most rows have no completion date.')}
+          <div>
+            Checklist Name values: <b>{diag.checklistNames.join(', ') || 'none'}</b>
+          </div>
+          <div>
+            Compliance Form Name values: <b>{diag.complianceFormNames.join(', ') || 'none'}</b>
+          </div>
+          {diag.jsaNameMatches === 0 &&
+            warn(`KPI 13 unmeasured: no Checklist Name equals "${JSA_NAME}" (fix JSA_NAME in config).`)}
+          {diag.issuesNameMatches === 0 &&
+            warn(`KPI 14 unmeasured: no Compliance Form Name equals "${ISSUES_FORM_NAME}" (fix ISSUES_FORM_NAME in config).`)}
+        </>
+      )}
     </div>
   );
 };

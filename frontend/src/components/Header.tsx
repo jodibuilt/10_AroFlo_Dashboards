@@ -1,15 +1,25 @@
 import React, { useState } from 'react';
 import { AuthUser } from '../types';
+import { ThemeMode } from '../reporting/theme';
 import { Modal } from './Modal';
 
-// Top header: a hamburger (mobile only), a Settings dialog (the "Manage
-// users" link, admins only), and the signed-in user's initial.
+// Top header: a hamburger (mobile only), the app-wide light/dark switch, a
+// Settings dialog (the "Manage users" link, admins only), and the signed-in
+// user's initial.
 interface HeaderProps {
   onOpenMobileNav: () => void;
   user: AuthUser;
+  themeMode: ThemeMode;
+  onThemeChange: (mode: ThemeMode) => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenMobileNav, user }) => {
+const THEME_OPTIONS: { mode: ThemeMode; icon: string; label: string }[] = [
+  { mode: 'light', icon: 'light_mode', label: 'Light theme' },
+  { mode: 'dark', icon: 'dark_mode', label: 'Dark theme' },
+  { mode: 'system', icon: 'computer', label: 'Match this device' },
+];
+
+export const Header: React.FC<HeaderProps> = ({ onOpenMobileNav, user, themeMode, onThemeChange }) => {
   const [showSettings, setShowSettings] = useState(false);
   const isAdmin = user.role === 'admin';
 
@@ -26,8 +36,26 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileNav, user }) => {
           <span className="material-symbols-outlined text-[24px]" aria-hidden="true">menu</span>
         </button>
 
-        {/* Right Action Tools: Settings, Profile */}
+        {/* Right Action Tools: Theme, Settings, Profile */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
+          {/* Theme — applies to the whole app, not just the page in view */}
+          <div role="group" aria-label="Theme" className="flex items-center gap-0.5 rounded-md border border-chrome-edge p-0.5">
+            {THEME_OPTIONS.map((o) => (
+              <button
+                key={o.mode}
+                onClick={() => onThemeChange(o.mode)}
+                aria-label={o.label}
+                aria-pressed={themeMode === o.mode}
+                title={o.label}
+                className={`inline-flex h-9 w-9 items-center justify-center rounded-[5px] transition-colors ${
+                  themeMode === o.mode ? 'bg-chrome-edge text-white' : 'text-chrome-text hover:text-white hover:bg-chrome-line'
+                }`}
+              >
+                <span className="material-symbols-outlined text-[18px]" aria-hidden="true">{o.icon}</span>
+              </button>
+            ))}
+          </div>
+
           {/* Settings Modal Toggle */}
           {isAdmin && (
             <button

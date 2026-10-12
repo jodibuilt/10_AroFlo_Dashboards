@@ -1,0 +1,68 @@
+/* App-wide dark theme.
+
+   The Reports pages always had a dark palette, scoped to their own wrapper
+   by the `dash-dark` class (index.css, reporting/theme.ts). In this app that
+   class goes on <html> instead (hooks/useThemeMode.ts), and the rules below
+   carry everything outside Reports along with it — shell, Tools, modals,
+   login. Values mirror DARK in reporting/theme.ts.
+
+   Kept out of index.css and the shared components on purpose: those are
+   copied unchanged from test_all_aroflo (scripts/checkDrift.js), so the
+   overrides target their existing class names from here. */
+
+/* The design tokens, re-pointed. Components use these through utilities
+   (bg-canvas, text-ink, border-default, …), so most of the UI follows. */
+:root.dash-dark {
+  color-scheme: dark;
+
+  --color-ink: #fafafa;           /* primary text */
+  --color-canvas: #18181b;        /* app background */
+  --color-surface: #323236;       /* inset panels, table headers, hover */
+  --color-default: #3f3f46;       /* default border */
+  --color-strong: #52525b;        /* stronger border */
+  --color-muted: #a1a1aa;         /* secondary text */
+  --color-accent-wash: #3a2418;
+}
+
+/* `ink` is also the dark chrome background (sidebar, header, login
+   backdrop), and chrome stays dark in both themes. */
+.dash-dark .bg-ink {
+  background-color: #18181b;
+}
+.dash-dark .skip-link {
+  background: #3f3f46;
+}
+
+/* Panels the shared components hard-code as white. The knob of the
+   Manage-navigation toggles is the one white thing that should stay white. */
+.dash-dark .bg-white:not(.rounded-full),
+.dash-dark .bg-\[\#ffffff\] {
+  background-color: #27272a;
+}
+
+/* Error callouts (red-50 / red-200 / red-700). */
+.dash-dark .bg-red-50 {
+  background-color: rgba(220, 38, 38, 0.14);
+}
+.dash-dark .border-red-200 {
+  border-color: rgba(220, 38, 38, 0.45);
+}
+.dash-dark .text-red-700 {
+  color: #fca5a5;
+}
+
+/* The two column accents in the WO Consolidator preview, lifted so they
+   stay readable on a dark row. */
+.dash-dark .text-\[\#6D28D9\] {
+  color: #a78bfa;
+}
+.dash-dark .text-\[\#0058BE\] {
+  color: #60a5fa;
+}
+
+.dash-dark ::-webkit-scrollbar-thumb {
+  background: #52525b;
+}
+.dash-dark ::-webkit-scrollbar-thumb:hover {
+  background: #71717a;
+}

@@ -6,7 +6,13 @@ const config = require('./config');
 const logger = require('./logger');
 const AroFloClient = require('./aroflo/AroFloClient');
 const { DashboardCache } = require('./cache');
-const { buildReportingKpis, buildReportingClients, buildOverdueAgeing, buildInvoicingReport } = require('./views');
+const {
+  buildReportingKpis,
+  buildReportingClients,
+  buildOverdueAgeing,
+  buildInvoicingReport,
+  buildKpiMatrixTasks,
+} = require('./views');
 const { openDb: openAuthDb } = require('./auth/db');
 const { seedFirstAdmin } = require('./auth/seed');
 const { createAuthRouter } = require('./auth/routes');
@@ -62,10 +68,9 @@ app.use(express.static(frontendDistDir, { index: 'index.html' }));
 const requireApiAuth = requireAuthApi(authDb);
 app.get('/api/status', requireApiAuth, (req, res) => res.json(cache.status()));
 
-// Navigation visibility — which sidebar tabs / report + tool sub-tabs an
-// admin has hidden. Everyone reads it (the sidebar needs it to render);
-// only an admin can change it. `subTabs` keys are namespaced, e.g.
-// "reports:invoicing", "tools:wo-consolidator".
+// Navigation visibility — which sidebar tabs / tool sub-tabs an admin has
+// hidden. Everyone reads it (the sidebar needs it to render); only an admin
+// can change it. `subTabs` keys are namespaced, e.g. "tools:wo-consolidator".
 const NAV_HIDDEN_DEFAULT = { tabs: [], subTabs: [] };
 app.get('/api/settings/nav', requireApiAuth, (req, res) => {
   res.json(appDb.getSetting('nav_hidden', NAV_HIDDEN_DEFAULT));
@@ -101,6 +106,7 @@ app.get('/api/reporting/invoicing', requireApiAuth, (req, res) => {
   const { view, dateFrom, dateTo } = req.query;
   res.json(buildInvoicingReport(cache, { view, dateFrom, dateTo }));
 });
+app.get('/api/reporting/kpi-matrix', requireApiAuth, (req, res) => res.json(buildKpiMatrixTasks(cache)));
 
 app.get('/api/dashboard-edits/:stateKey', requireApiAuth, (req, res) => {
   const { view, dateFrom, dateTo } = req.query;
