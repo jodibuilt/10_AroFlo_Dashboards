@@ -1,6 +1,6 @@
 # AroFlo Dashboards
 
-The Reports and Tools sections of `test_all_aroflo`, as a standalone app.
+The Reports and Tools 
 
 | Section | What's in it |
 |---|---|
