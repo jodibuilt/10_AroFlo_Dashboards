@@ -297,9 +297,14 @@ function addDerivedFlags(row: KpiTaskRow, now: Date): void {
   row.commencedOnTime =
     row.actualStartAt && row.slaDueAt ? row.actualStartAt.getTime() <= row.slaDueAt.getTime() : null;
 
-  // 5.3 completed_on_time — against AroFlo's own Task Due Date
-  row.completedOnTime =
-    row.completedAt && row.taskDueAt ? row.completedAt.getTime() <= row.taskDueAt.getTime() : null;
+  // 5.3 completed_on_time — against AroFlo's own Task Due Date. A job still
+  // open after that date has missed it whenever it ends up finished, so it
+  // is late now, not "not yet known" — the Work Orders page counts it as
+  // overdue, and the two pages have to agree. Open and not yet due stays
+  // null: undecided.
+  if (!row.taskDueAt) row.completedOnTime = null;
+  else if (row.completedAt) row.completedOnTime = row.completedAt.getTime() <= row.taskDueAt.getTime();
+  else row.completedOnTime = row.taskDueAt.getTime() < now.getTime() ? false : null;
 
   // 5.4 has_commenced — never null
   row.hasCommenced =
@@ -325,10 +330,8 @@ function addDerivedFlags(row: KpiTaskRow, now: Date): void {
     row.isOverdue = row.completedAt.getTime() > row.slaDueAt.getTime();
   }
 
-  // 5.7 task_is_late — guarded on the date being present
-  row.taskIsLate =
-    (Boolean(row.actualStartAt) && row.commencedOnTime === false) ||
-    (Boolean(row.completedAt) && row.completedOnTime === false);
+  // 5.7 task_is_late — started late, finished late, or open past its due date
+  row.taskIsLate = (Boolean(row.actualStartAt) && row.commencedOnTime === false) || row.completedOnTime === false;
 
   // 5.8 task_evaluable — all four dates required
   row.taskEvaluable = Boolean(row.actualStartAt && row.completedAt && row.slaDueAt && row.taskDueAt);

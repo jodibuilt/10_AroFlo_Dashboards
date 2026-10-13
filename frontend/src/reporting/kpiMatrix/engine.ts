@@ -74,12 +74,15 @@ function masksFor(tier: Tier | null, metric: Metric, now: Date): Masks {
         fail: (r) => inTier(r) && isFalse(r.commencedOnTime) && Boolean(r.actualStartAt),
       };
     }
+    // The pool is every job whose outcome is known: finished (on time or
+    // not), or still open past its due date — late already (ingest 5.3).
+    // Open and not yet due is in neither count.
     return {
       count: (r) => inTier(r) && completedPresent(r),
       total: inTier,
       ontimeCount: (r) => inTier(r) && isTrue(r.completedOnTime),
-      ontimePool: (r) => inTier(r) && Boolean(r.completedAt) && Boolean(r.taskDueAt),
-      fail: (r) => inTier(r) && isFalse(r.completedOnTime) && completedPresent(r),
+      ontimePool: (r) => inTier(r) && r.completedOnTime !== null,
+      fail: (r) => inTier(r) && isFalse(r.completedOnTime),
     };
   }
 

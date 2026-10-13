@@ -21,7 +21,13 @@ async function standIn(reply = () => []) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://aroflo');
     const zone = url.searchParams.get('zone') || '';
-    const request = { method: req.method, zone, where: url.searchParams.getAll('where'), page: Number(url.searchParams.get('page')) };
+    const request = {
+      method: req.method,
+      zone,
+      where: url.searchParams.getAll('where'),
+      join: url.searchParams.getAll('join'),
+      page: Number(url.searchParams.get('page')),
+    };
     requests.push(request);
     const result = reply(zone, request);
     res.writeHead(200, { 'content-type': 'application/json', ...headers });
@@ -62,6 +68,11 @@ test('a refresh only reads, and asks each dated zone for the whole period the re
     assert.deepEqual(where.Invoices, [`and|dateinvoiced|>=|${iso}`]);
     assert.deepEqual(where.Payments, [`and|datepaid|>=|${iso.replace(/-/g, '/')}`]);
     assert.equal(cache.status().coverageFrom, iso.replace(/-/g, '/'));
+
+    // Without these AroFlo sends every work order's substatus, labour and
+    // notes empty — and says nothing about that either.
+    const tasks = aroflo.requests.find((r) => r.zone === 'Tasks');
+    assert.deepEqual(tasks.join, ['substatus,labour,notes']);
   } finally {
     await aroflo.close();
   }

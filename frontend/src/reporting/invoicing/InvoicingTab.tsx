@@ -6,6 +6,8 @@ import { fetchInvoicingReport } from '../../services/reportingInvoicing';
 import { formatCoverage } from '../../services/reportingRefresh';
 import { buildInvoicingExcel, buildInvoicingPdf } from './exportInvoicing';
 import { ClientMultiSelect, decodeClients, encodeClients } from '../components/ClientMultiSelect';
+import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, FilterKind, NoMatches, useTableControls } from '../components/tableControls';
+import { DatePresets, firstOfThisMonth, localDay } from '../components/DatePresets';
 
 // The client groups this report sorts every invoice into. Any number can be
 // picked; none is all of them ('all').
@@ -15,13 +17,9 @@ const VIEW_OPTIONS = [
   { value: 'others', label: 'Projects / Other' },
 ];
 
-function firstOfMonth(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-}
-function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+const firstOfMonth = firstOfThisMonth;
+// Today here, not in UTC — see localDay.
+const todayStr = (): string => localDay();
 function loadLocal(key: string, fallback: string): string {
   try {
     return localStorage.getItem(key) ?? fallback;
@@ -54,12 +52,106 @@ interface Col {
   align?: 'right';
   money?: boolean;
   date?: boolean;
+  // In a filterable table: the kind of filter under the heading. Default is
+  // "at least" for money and a box to type in for everything else.
+  filter?: FilterKind;
 }
+
+// A cell as the table shows it.
+function cellText(c: Col, r: object): string {
+  const v = (r as Record<string, unknown>)[c.key];
+  if (c.money) return money(v as number);
+  if (c.date) return fmtDate(v as string | null);
+  return String(v ?? '');
+}
+
+interface ReportTableProps {
+  title: string;
+  cols: Col[];
+  rows: object[];
+  boldRow: (r: object) => boolean;
+  palette: Palette;
+  striped: boolean;
+  filterable: boolean;
+}
+
+const ReportTable: React.FC<ReportTableProps> = ({ title, cols, rows, boldRow, palette, striped, filterable }) => {
+  const columns: ControlColumn<object>[] = cols.map((c) => ({
+    key: c.key,
+    label: c.label,
+    align: c.align,
+    filter: c.filter ?? (c.money ? 'number' : 'text'),
+    text: (r) => cellText(c, r),
+    // Dates arrive as YYYY/MM/DD and amounts as numbers, which sort as they should.
+    sortValue: (r) => (r as Record<string, string | number | null>)[c.key],
+  }));
+  const controls = useTableControls(rows, columns);
+  const shown = filterable ? controls.rows : rows;
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
+        <h3 className="text-[14px] font-semibold" style={{ color: palette.inkPrimary }}>
+          {title}
+        </h3>
+        {filterable && rows.length > 0 && <ControlSummary controls={controls} palette={palette} noun="invoices" />}
+      </div>
+      {/* The surface background is what makes the stripes show: striped
+          rows are the page colour, so on a bare page they vanish. */}
+      <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 460 }}>
+        <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
+          <thead>
+            <tr>
+              {cols.map((c, i) => (
+                <th
+                  key={c.key}
+                  aria-sort={filterable ? ariaSort(controls, c.key) : undefined}
+                  className={`px-3 py-2 font-semibold sticky top-0 z-10 align-bottom ${c.align === 'right' ? 'text-right' : 'text-left'}`}
+                  style={{ color: palette.inkSecondary, background: palette.pagePlane }}
+                >
+                  {filterable ? <ColumnHeading column={columns[i]} controls={controls} palette={palette} /> : c.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={cols.length} className="px-3 py-3" style={{ color: palette.inkMuted }}>
+                  Nothing in this selection.
+                </td>
+              </tr>
+            )}
+            {filterable && <NoMatches controls={controls} palette={palette} span={cols.length} />}
+            {shown.map((r, i) => (
+              <tr
+                key={i}
+                style={{
+                  background: striped && i % 2 ? palette.pagePlane : 'transparent',
+                  fontWeight: boldRow(r) ? 700 : undefined,
+                }}
+              >
+                {cols.map((c) => (
+                  <td key={c.key} className={`px-3 py-1.5 ${c.align === 'right' ? 'text-right' : ''}`}>
+                    {cellText(c, r)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
 
 export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 0, coverageFrom = null }) => {
   const [view, setView] = useState(() => loadLocal('reporting-invoicing-view', 'all'));
-  const [dateFrom, setDateFrom] = useState(() => loadLocal('reporting-invoicing-from', firstOfMonth()));
-  const [dateTo, setDateTo] = useState(() => loadLocal('reporting-invoicing-to', todayStr()));
+  // Opens on this month to today, like Work Orders. The dates used to be
+  // remembered between visits, which left the page ending on whatever day
+  // it was last opened — every invoice since then missing, with nothing on
+  // the page to say so. The client pick is still remembered.
+  const [dateFrom, setDateFrom] = useState(firstOfMonth);
+  const [dateTo, setDateTo] = useState(todayStr);
   const [data, setData] = useState<InvoicingReportResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -70,12 +162,12 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
   useEffect(() => {
     try {
       localStorage.setItem('reporting-invoicing-view', view);
-      localStorage.setItem('reporting-invoicing-from', dateFrom);
-      localStorage.setItem('reporting-invoicing-to', dateTo);
+      localStorage.removeItem('reporting-invoicing-from');
+      localStorage.removeItem('reporting-invoicing-to');
     } catch {
       /* noop */
     }
-  }, [view, dateFrom, dateTo]);
+  }, [view]);
 
   const from = dateFrom > dateTo ? dateTo : dateFrom;
 
@@ -142,66 +234,27 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
   const cardStyle: React.CSSProperties = { background: palette.surface, border: `1px solid ${palette.border}` };
   const h2 = 'text-[1.05rem] font-semibold pb-1 mb-3';
 
-  function table<T extends object>(title: string, cols: Col[], rows: T[], boldRow: (r: T) => boolean) {
+  // `filterable` gives the table sortable headings with a filter under each.
+  // For the list of invoices; the two summaries above it have total rows
+  // that only make sense where they are.
+  function table<T extends object>(title: string, cols: Col[], rows: T[], boldRow: (r: T) => boolean, filterable = false) {
     return (
-      <div>
-        <h3 className="text-[14px] font-semibold mb-2" style={{ color: palette.inkPrimary }}>
-          {title}
-        </h3>
-        {/* The surface background is what makes the stripes show: striped
-            rows are the page colour, so on a bare page they vanish. */}
-        <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 460 }}>
-          <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
-            <thead>
-              <tr>
-                {cols.map((c) => (
-                  <th
-                    key={c.key}
-                    className={`px-3 py-2 font-semibold sticky top-0 z-10 ${c.align === 'right' ? 'text-right' : 'text-left'}`}
-                    style={{ color: palette.inkSecondary, background: palette.pagePlane }}
-                  >
-                    {c.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={cols.length} className="px-3 py-3" style={{ color: palette.inkMuted }}>
-                    Nothing in this selection.
-                  </td>
-                </tr>
-              )}
-              {rows.map((r, i) => (
-                <tr
-                  key={i}
-                  style={{
-                    background: striped && i % 2 ? palette.pagePlane : 'transparent',
-                    fontWeight: boldRow(r) ? 700 : undefined,
-                  }}
-                >
-                  {cols.map((c) => {
-                    const v = (r as Record<string, unknown>)[c.key];
-                    let text: React.ReactNode = String(v ?? '');
-                    if (c.money) text = money(v as number);
-                    else if (c.date) text = fmtDate(v as string | null);
-                    return (
-                      <td key={c.key} className={`px-3 py-1.5 ${c.align === 'right' ? 'text-right' : ''}`}>
-                        {text}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <ReportTable
+        title={title}
+        cols={cols}
+        rows={rows}
+        boldRow={boldRow as (r: object) => boolean}
+        palette={palette}
+        striped={striped}
+        filterable={filterable}
+      />
     );
   }
 
   const k = data?.data.kpis;
+  // The server has not read invoices from AroFlo since it started — so there
+  // are no totals to show yet, as opposed to totals of nil.
+  const notLoaded = Boolean(data) && !data?.meta.lastFetchedAt;
 
   return (
     <div className="space-y-6">
@@ -239,6 +292,16 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
           />
         </label>
       </div>
+      <DatePresets
+        palette={palette}
+        from={dateFrom}
+        to={dateTo}
+        coverageFrom={coverageFrom}
+        onPick={(nextFrom, nextTo) => {
+          setDateFrom(nextFrom);
+          setDateTo(nextTo);
+        }}
+      />
       <p className="text-[12px]" style={{ color: palette.inkMuted }}>
         Date range filters on <b>Date Invoiced</b>. An invoice counts as paid when payments recorded against it in AroFlo
         add up to its total.
@@ -291,7 +354,16 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
         </div>
       )}
 
-      {data && (
+      {notLoaded && (
+        <div
+          className="rounded-md p-6 text-[13px]"
+          style={{ background: 'rgba(2,132,199,0.08)', border: `1px solid ${palette.border}`, color: palette.inkSecondary }}
+        >
+          No invoices are loaded yet. Press <b>Refresh from AroFlo</b> at the top of the page.
+        </div>
+      )}
+
+      {data && !notLoaded && (
         <>
           <div
             className="rounded-md p-3 text-[12px]"
@@ -364,16 +436,17 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
             [
               { key: 'invoiceNumber', label: 'Invoice' },
               { key: 'client', label: 'Client' },
-              { key: 'clientBucket', label: 'Bucket' },
-              { key: 'status', label: 'Status' },
+              { key: 'clientBucket', label: 'Bucket', filter: 'choice' },
+              { key: 'status', label: 'Status', filter: 'choice' },
               { key: 'dateInvoiced', label: 'Date Invoiced', date: true },
               { key: 'dueDate', label: 'Due Date', date: true },
               { key: 'totalInc', label: 'Total (Inc GST)', align: 'right', money: true },
               { key: 'totalEx', label: 'Total (Ex GST)', align: 'right', money: true },
-              { key: 'paid', label: 'Paid' },
+              { key: 'paid', label: 'Paid', filter: 'choice' },
             ],
             data.data.invoiceList,
             () => false,
+            true,
           )}
 
           {/* Export */}

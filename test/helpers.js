@@ -48,15 +48,17 @@ const PRIORITY_MAP = new Map(PRIORITIES.map((p) => [p.priorityId, p]));
 let nextJob = 1000;
 
 // A raw Tasks-zone record, with AroFlo's own quirks: a blank date-time is a
-// single space, a date-only due is midnight.
-function rawTask({ client = 'Ventia', priority = 'id-p3', status = 'In Progress', requested = day(-3), due = null, completed = null, started = null, job } = {}) {
+// single space, a date-only due is midnight. `notes` are the note texts,
+// oldest first.
+function rawTask({ client = 'Ventia', priority = 'id-p3', status = 'In Progress', substatus = '', notes = [], requested = day(-3), due = null, completed = null, started = null, job } = {}) {
   const n = job ?? nextJob++;
   return {
     taskid: `internal-${n}==`,
     jobnumber: String(n),
     taskname: `Job ${n}`,
     status,
-    substatus: { substatusid: '', substatus: '' },
+    substatus: { substatusid: '', substatus },
+    tasknotes: notes.map((content, i) => ({ noteid: `n${i}`, dateposted: day(-20 + i), timeposted: '10:00:00', content })),
     priority,
     client: { clientid: 'c', clientname: client },
     tasklocation: { locationid: '', locationname: 'Site A' },

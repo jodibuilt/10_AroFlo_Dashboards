@@ -63,7 +63,7 @@ everyone in AroFlo.
 | Breakdown of P1, P2, P3, P4 work orders, separately | Work Orders → Breakdown Work Orders (P1 – P4), one tab each | AP1–AP4 are counted with P1–P4 |
 | Start date v Requested date | Requested Date and Actual Start Date columns | Start = first labour entry logged on the job |
 | Completed date v Required completed date | Required Completed Date, Completed Date and Days Late columns | Required = the job's due date in AroFlo |
-| Late because of materials or access | Delay Reason and Substatus columns; KPI Matrix "Comments" | **Delay Reason is empty until `KPI_DELAY_REASON_SUBSTATUSES` names the substatuses that mean this.** The Matrix comments are read from the job description |
+| Late because of materials or access | Delay Reason and Substatus columns; KPI Matrix "Comments" | Late jobs only: the current substatus if it is Non Access, Materials Ordered, On Hold/Materials Required or Sent to Procurement, otherwise a keyword match in the job's notes, marked "(from notes)". **It explains a late job; it does not excuse it — the figures count it as late either way.** The Matrix comments are read from the job description |
 | Preventative maintenance: P5s and PMs, same columns | Work Orders → Preventative Maintenance (P5 / PM) | AP5 is P5; SM is counted as PM |
 | Work orders issued for the month | General Statistics → Issued | By requested date |
 | Work orders completed for the month | General Statistics → Completed | Of those issued in the range, the ones now Completed / Archived |
@@ -79,6 +79,26 @@ everyone in AroFlo.
 Each report page carries the same definitions under "How these figures are
 worked out, and what they leave out".
 
+### Finding things in the tables
+
+The long tables — the Work Orders breakdowns, the overdue list, the invoice
+list and the Matrix's late jobs — all work the same way:
+
+- **Click a heading to sort**: smallest first, again for largest first, a
+  third time for the order the table opened in.
+- **A filter under each heading.** A box matches what the cell shows ("sep"
+  finds every September date, a job number finds the job); a list offers the
+  values in the column; a number column takes "at least" — `1` in Days Late
+  is the late jobs, which the breakdown tables also have as a **Late only**
+  button.
+- **A count** above the table says how many rows are showing, with **Clear
+  filters** once any are on.
+- **Quick range** buttons above Work Orders and Invoicing set the dates to a
+  whole month, this month so far, or everything loaded.
+
+Sorting and filtering are for looking at a table. The tiles, charts and the
+Excel / PDF reports are worked out from every row whatever is filtered.
+
 ## Is the data right?
 
 Three things answer that, in order of how often they are needed.
@@ -92,9 +112,10 @@ stops short of the daily allowance. It needs no AroFlo login.
 
 **The `Data check` line in the server log**, written after every refresh,
 describes what AroFlo actually sent: the dates covered, the statuses in use,
-how many work orders have a due date / completed date / logged labour, how
-invoices fall into the client groups, and how many payments link to an
-invoice that is held. These are the things that go wrong silently — a status
+how many work orders have a due date / completed date / logged labour /
+notes, how many late ones got a delay reason and from where, how invoices
+fall into the client groups, and how many payments link to an invoice that
+is held. These are the things that go wrong silently — a status
 the app doesn't count as completed, a client name that doesn't match the
 configured one, payments that don't link.
 
@@ -132,7 +153,56 @@ since then**; an older job that is still open is not in it.
   overdue. A job that is open and not yet due counts as on time.
 - **Level 5** (AP5) has no SLA target, so it is in no compliance row; it is
   listed under "P5 / PM". The KPI Matrix puts it in the 30-day P4 tier.
+- **Delay Reason** is given for late work orders only, from the two places
+  AroFlo can hold one. First the job's **current substatus**, when it is
+  Non Access, Materials Ordered, On Hold/Materials Required or Sent to
+  Procurement (`KPI_DELAY_REASON_SUBSTATUSES`). Failing that the job's **notes**, searched
+  for wording about materials or access and shown as e.g. "Non Access (from
+  notes)". The notes match is on keywords — "ordered", "parts", "no access" —
+  so it is a prompt to read the job, not a finding. AroFlo keeps no history
+  of substatuses: a job that was held up and has since moved on shows a
+  reason only if a note says so. "-" means neither place gave one. A delay
+  reason changes no figure — a late job counts as late whatever the cause.
 - **Paid** = payments recorded against the invoice add up to its total.
+
+### Why the two pages agree, and where they don't
+
+Work Orders and the KPI Matrix use one rule for a late work order: **finished
+after its due date, or still open past it**, judged by day (finished any time
+on the due date is on time), with "finished" taken from the status. So for
+the same clients and the same month, the **Late** count on a Matrix
+"Completed" row is that priority's overdue count on Work Orders.
+
+They are not the same report, and three things differ on purpose:
+
+- **The percentage.** Work Orders' Target KPI Compliance is "not overdue ÷
+  all work orders", so a job that is open and not yet due counts as on time.
+  The Matrix's On time % is "on time ÷ jobs whose outcome is known" — it
+  leaves that job out until it is finished or overdue. While work is in
+  progress the Matrix reads lower; once every job in the month is finished
+  or overdue the two are equal.
+- **Commenced.** The Matrix also scores when a job was started (first labour
+  entry against the tier's response window). Work Orders has no such
+  measure, so a job can be in the Matrix's "Late jobs" for starting late
+  without being overdue.
+- **Level 5.** AP5 jobs are in the Matrix's P4 row; on Work Orders they are
+  P5, with no compliance row.
+
+The `Data check` log line splits the late work orders into "finished after
+its due date" and "still open past its due date".
+
+**The rule is an assumption, and both pages say so.** Work Orders and the KPI
+Matrix each carry the same note (`reporting/components/LateRuleNote.tsx`)
+stating the rule and the two points to confirm with the people the report is
+for:
+
+1. Should a job that is still open past its due date count as late now, or
+   only once it has been finished? It matters: on the TTS account on
+   2026-10-12, 325 of the 409 late work orders loaded were still open and 84
+   had been finished late.
+2. Should the time of day on a due date count? Lateness is judged by day,
+   and 1,677 of the 2,967 work orders loaded had a due date with a time of
+   day on it.
 
 ## AroFlo's daily request allowance
 
@@ -267,6 +337,8 @@ for this app and are not checked:
 | `frontend/src/reporting/overdueAgeing/OverdueAgeingSection.tsx`, `reporting/types.ts` | the overdue table has no "Assigned" column |
 | `frontend/src/reporting/ReportingDashboardView.tsx` | takes its pane and its theme from the app shell (optional `tab` / `themeMode` props) and then hides its own switchers; no "Striped table rows" checkbox — tables are always striped |
 | `frontend/src/reporting/kpiMatrix/KpiMatrixSection.tsx`, `kpiMatrix/ingest.ts` | the matrix reads live AroFlo work orders; a CSV upload is an optional override |
+| `frontend/src/reporting/kpiMatrix/engine.ts`, `kpiMatrix/ingest.ts` | a job still open past its due date is late on its "Completed" row, as it is on Work Orders |
+| `EditableTable.tsx`, `OverdueAgeingSection.tsx`, `InvoicingTab.tsx`, `KpiMatrixSection.tsx`, `AnalyticsTab.tsx` | long tables scroll in their box, sort by heading and filter by column; quick date ranges; today is the local day |
 | `frontend/src/nav.ts` | no Reports sub-tabs — the report panes are sidebar tabs here |
 | `frontend/src/reporting/plotly.ts` | `autosize: true` in the shared chart layout — **a bug fix `test_all_aroflo` needs too** (see below) |
 | `frontend/src/reporting/components/EditableTable.tsx` | shows live rows unless the user has edited the table; saves only real edits — **a bug fix `test_all_aroflo` needs too** (see below) |
@@ -318,7 +390,7 @@ Plotly keeps the size of its first draw unless the layout says
 the company left a chart spilling out of a box that had shrunk, or small in
 one that had grown. The fix is the one line in `baseLayout`.
 
-Six behaviours differ from the Reports tab in `test_all_aroflo`:
+These behaviours differ from the Reports tab in `test_all_aroflo`:
 
 - **Priorities are named by AroFlo, not by a table of ids.** Each refresh
   reads the account's own priority list (the `Priorities` zone), so a task's
@@ -337,14 +409,37 @@ Six behaviours differ from the Reports tab in `test_all_aroflo`:
   replaces the live data until it is cleared. Live mode measures KPIs 1–11
   only — AroFlo's API has no invoice-to-task link, checklists or compliance
   forms, so 12–14 read N/A unless a CSV is uploaded. "Commenced" is the first
-  labour entry logged on the job (the CSV uses Schedule Start), and a due date
-  with no time counts as due by the end of that day.
+  labour entry logged on the job (the CSV uses Schedule Start), and lateness
+  is judged by day: due by the end of the due date, whatever time AroFlo
+  holds against it.
+- **An open job past its due date is late on the KPI Matrix.** In
+  `test_all_aroflo` a "Completed" row judges only jobs that have been
+  finished, so an overdue job that is still open is late on Work Orders and
+  nowhere on the Matrix. Here it is late on both (see "Why the two pages
+  agree" above). This applies to an uploaded CSV as well.
+- **Tables scroll.** A long breakdown table scrolls inside its box under a
+  fixed header, like the other report tables, instead of running down the
+  page.
+- **Priorities are listed up the scale** — P1 to P4, then P5 and PM — in the
+  Overdue chart and its picker, not most jobs first.
+- **The long tables sort and filter by column**, and the date pickers have
+  one-click month ranges (`reporting/components/tableControls.tsx`,
+  `DatePresets.tsx` — see "Finding things in the tables").
+- **"Today" is the local day.** The date ranges took today's date in UTC,
+  which in Adelaide is still yesterday until mid-morning: until then the
+  default range stopped a day short and today couldn't be picked. Still so in
+  `test_all_aroflo`.
+- **Invoicing opens on this month to today**, like Work Orders. It used to
+  reopen on the dates it was last left on, so a range saved last week kept
+  ending last week and left out every invoice since, without saying so.
 - **Light / dark is app-wide.** The switch is in the header and covers the
   shell, Tools, modals, login and the Manage users page, not just Reports.
   Dark styling for everything outside Reports lives in `frontend/src/dark.css`.
 - **No "Assigned" column** in the overdue table. It was filled from staff
   assignments made on the Jobs and Map screens, which this app doesn't have.
-- **Delay reason** in the breakdown tables uses each work order's current
-  substatus. `test_all_aroflo` can also use substatus history recorded by its
-  trigger engine. This only matters once `KPI_DELAY_REASON_SUBSTATUSES` is set;
-  it is empty by default in both apps.
+- **Delay reason** in the breakdown tables comes from each late work order's
+  current substatus, and failing that from its notes (`src/delayReason.js`;
+  the Tasks fetch asks AroFlo for notes as well). `KPI_DELAY_REASON_SUBSTATUSES`
+  defaults to the account's four held-up substatuses here; in
+  `test_all_aroflo` it is empty by default, notes are not read, and the
+  reason can come from substatus history recorded by its trigger engine.

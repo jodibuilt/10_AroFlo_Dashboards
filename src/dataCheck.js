@@ -1,4 +1,7 @@
+const config = require('./config');
 const logger = require('./logger');
+const kpi = require('./kpi');
+const { delayReasonFor, delayReasonSource } = require('./delayReason');
 const { invoiceClientBucket } = require('./views');
 
 // After each refresh: one log entry describing what actually came back from
@@ -12,7 +15,10 @@ const { invoiceClientBucket } = require('./views');
 //   - whether payments actually link to the invoices held (if they don't,
 //     every invoice reads as unpaid);
 //   - how invoices fall into the client groups (a client name that differs
-//     from the configured one lands in Projects/Other).
+//     from the configured one lands in Projects/Other);
+//   - how many late work orders got a delay reason, and from where (none
+//     with notes means the notes didn't come; none from a substatus means
+//     the account's substatuses aren't named as configured).
 
 function tally(records, pick) {
   const counts = {};
@@ -39,15 +45,36 @@ function logDataCheck(cache) {
   const linked = payments.filter((p) => p.invoiceId);
   const paidInvoiceIds = new Set(linked.filter((p) => invoiceIds.has(p.invoiceId)).map((p) => p.invoiceId));
 
+  const late = jobs.map((t) => [t, kpi.computeDaysLate(t)]).filter(([, daysLate]) => daysLate > 0);
+  const lateReasons = late.map(([t, daysLate]) => delayReasonFor(t, daysLate));
+  const finished = (t) => config.completedTaskStatuses.includes(String(t.status || '').toLowerCase());
+
   logger.info('Data check', {
     coveredFrom: cache.coverageFrom,
     workOrders: {
       count: jobs.length,
       requested: span(jobs, (t) => t.requestDate),
       statuses: tally(jobs, (t) => t.status),
-      // The candidates for KPI_DELAY_REASON_SUBSTATUSES: which of these mean
-      // "waiting on materials" or "couldn't get access" is a business call.
+      // Compare with KPI_DELAY_REASON_SUBSTATUSES: a substatus here that
+      // means "waiting on materials" or "couldn't get access" but isn't in
+      // that list gives no delay reason.
       substatuses: tally(jobs, (t) => t.substatus),
+      withNotes: having(jobs, (t) => t.notes),
+      late: {
+        count: late.length,
+        // Both kinds are late on Work Orders and on the KPI Matrix. A page
+        // that only judged finished jobs would miss the first kind entirely.
+        kind: tally(late, ([t]) => (finished(t) ? 'finished after its due date' : 'still open past its due date')),
+        delayReasonSource: tally(lateReasons, delayReasonSource),
+        delayReasons: tally(lateReasons, (reason) => reason),
+      },
+      // Both pages take "finished" from the status and judge lateness by
+      // day. These say whether the data ever strains either: a finished job
+      // with no completed date can't be judged, an open one carrying a date
+      // was reopened, and a due time other than midnight is being ignored.
+      finishedWithoutCompletedDate: jobs.filter((t) => finished(t) && !t.completedDate).length,
+      openWithCompletedDate: jobs.filter((t) => !finished(t) && t.completedDate).length,
+      dueWithATimeOfDay: jobs.filter((t) => t.dueDateTime && !/ 00:00:00$/.test(t.dueDateTime) && / \d/.test(t.dueDateTime)).length,
       withDueDate: having(jobs, (t) => t.dueDate),
       withCompletedDate: having(jobs, (t) => t.completedDate),
       withLabourLogged: having(jobs, (t) => t.actualStartDate),

@@ -27,12 +27,15 @@ const ZONES = [
   // Each AroFlo account names its own priorities and a task carries only the
   // id, so this goes first: the Tasks pass below uses it to name them.
   { key: 'priorities', zone: 'Priorities', pluralKey: 'priorities', singularKey: 'priority', normalize: normalizePriority },
-  // join=substatus,labour: without an explicit join the v1 Tasks GET returns
-  // `substatus` and `labours` as present-but-empty keys (AroFlo still says
-  // status "0" — silent). substatus powers the breakdown "Substatus" column;
-  // the earliest `labours[].workdatetimestart` is normalizeTask's actualStartDate.
-  // Comma-joined single value is the form confirmed working for multi-join
-  // (aroflo_dash). Adds ~one nested array per task to the response.
+  // join=substatus,labour,notes: without an explicit join the v1 Tasks GET
+  // returns `substatus`, `labours` and `tasknotes` as present-but-empty keys
+  // (AroFlo still says status "0" — silent). substatus powers the breakdown
+  // "Substatus" column and the delay reason; the earliest
+  // `labours[].workdatetimestart` is normalizeTask's actualStartDate; the
+  // notes are the delay reason's fallback (src/delayReason.js). Comma-joined
+  // single value is the form confirmed working for multi-join (aroflo_dash,
+  // which sent four). Each adds a nested array per task to the response —
+  // bigger pages, not more requests.
   // The filter field is `daterequested`, although the same date comes back
   // named `requestdate`. Filtering on the response's name is not an error to
   // AroFlo: it drops the clause and applies its 30-day default — which the
@@ -43,7 +46,7 @@ const ZONES = [
     pluralKey: 'tasks',
     singularKey: 'task',
     normalize: normalizeTask,
-    join: ['substatus,labour'],
+    join: ['substatus,labour,notes'],
     where: () => [`and|daterequested|>=|${isoDay(coverageStart())}`],
   },
   {

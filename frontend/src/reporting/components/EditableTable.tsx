@@ -1,11 +1,23 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Palette } from '../theme';
 import { EditScope, loadDashboardEdit, saveDashboardEdit, deleteDashboardEdit } from '../../services/reportingEdits';
+import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, FilterKind, NoMatches, useTableControls } from './tableControls';
 
 export interface EditableColumn {
   key: string;
   label: string;
   align?: 'left' | 'right';
+  // With `filterable`: what kind of filter the column gets (default: a box
+  // to type in). See tableControls.tsx.
+  filter?: FilterKind;
+}
+
+// A one-click filter above the table: sets `column`'s filter to `value`,
+// and clears it again when clicked while on.
+export interface QuickFilter {
+  label: string;
+  column: string;
+  value: string;
 }
 
 interface EditableTableProps {
@@ -19,9 +31,15 @@ interface EditableTableProps {
   formatCell?: (colKey: string, value: string | number | null, row: Record<string, string | number | null>) => React.ReactNode;
   extraHeaderControls?: React.ReactNode;
   emptyMessage?: string;
+  // Sortable headings with a filter under each, and a row count. For the
+  // long tables; a five-row summary doesn't need it.
+  filterable?: boolean;
+  quickFilters?: QuickFilter[];
 }
 
 const ROWS_PER_PAGE = 20;
+// Taller than this and the table scrolls (px) — about twelve rows.
+const MAX_TABLE_HEIGHT = 460;
 
 type Row = Record<string, string | number | null>;
 
@@ -59,6 +77,8 @@ export const EditableTable: React.FC<EditableTableProps> = ({
   formatCell,
   extraHeaderControls,
   emptyMessage,
+  filterable = false,
+  quickFilters = [],
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [edit, setEdit] = useState<SavedEdit | null>(null);
@@ -121,7 +141,28 @@ export const EditableTable: React.FC<EditableTableProps> = ({
     setPage(0);
   };
 
-  const pageRows = isEditing ? rows.slice(page * ROWS_PER_PAGE, (page + 1) * ROWS_PER_PAGE) : rows;
+  // Filters match the cell as it is shown (a date as "05 Sept 2026"); sorting
+  // goes by the value underneath, which for a date is YYYY/MM/DD and for a
+  // count is a number.
+  const shownText = (key: string, row: Row): string => {
+    const shown = formatCell ? formatCell(key, row[key] ?? null, row) : row[key];
+    return typeof shown === 'string' || typeof shown === 'number' ? String(shown) : String(row[key] ?? '');
+  };
+  const controlColumns: ControlColumn<Row>[] = allColumns.map((c) => ({
+    key: c.key,
+    label: c.label,
+    align: c.align,
+    filter: c.filter ?? 'text',
+    text: (row) => shownText(c.key, row),
+    sortValue: (row) => row[c.key],
+  }));
+  const controls = useTableControls(rows, controlColumns);
+  // While editing, every row is shown in its own order: an edit is saved
+  // against the row's position, which a filter or a sort would move.
+  const controlled = filterable && !isEditing;
+  const viewRows = controlled ? controls.rows : rows;
+
+  const pageRows = isEditing ? rows.slice(page * ROWS_PER_PAGE, (page + 1) * ROWS_PER_PAGE) : viewRows;
   const pageCount = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
 
   return (
@@ -129,14 +170,38 @@ export const EditableTable: React.FC<EditableTableProps> = ({
       <div className="flex items-center justify-end gap-2 px-3 py-2" style={{ borderBottom: `1px solid ${palette.border}` }}>
         {/* An edit replaces the live rows, so say so — otherwise a table that
             has stopped following AroFlo looks exactly like one that hasn't. */}
-        {edit && (
-          <span className="mr-auto text-[11px]" style={{ color: palette.statusWarningText }}>
-            Showing your edited version of this table, not the latest AroFlo data.{' '}
-            <button onClick={handleReset} className="underline font-semibold">
-              Reset
-            </button>
-          </span>
-        )}
+        <div className="mr-auto flex flex-wrap items-center gap-x-3 gap-y-1">
+          {controlled && rows.length > 0 && <ControlSummary controls={controls} palette={palette} />}
+          {controlled &&
+            rows.length > 0 &&
+            quickFilters.map((q) => {
+              const on = (controls.filters[q.column] || '') === q.value;
+              return (
+                <button
+                  key={q.label}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => controls.setFilter(q.column, on ? '' : q.value)}
+                  className="px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                  style={{
+                    background: on ? palette.accentBlue : 'transparent',
+                    color: on ? '#fff' : palette.inkPrimary,
+                    border: `1px solid ${on ? palette.accentBlue : palette.border}`,
+                  }}
+                >
+                  {q.label}
+                </button>
+              );
+            })}
+          {edit && (
+            <span className="text-[11px]" style={{ color: palette.statusWarningText }}>
+              Showing your edited version of this table, not the latest AroFlo data.{' '}
+              <button onClick={handleReset} className="underline font-semibold">
+                Reset
+              </button>
+            </span>
+          )}
+        </div>
         {extraHeaderControls}
         <button
           onClick={() => setIsEditing((v) => !v)}
@@ -153,22 +218,28 @@ export const EditableTable: React.FC<EditableTableProps> = ({
           {emptyMessage || 'No rows.'}
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        // A long table scrolls inside this box, under a header that stays
+        // put, instead of running down the page — the same height as the
+        // other report tables. The header line is a shadow on the cells: a
+        // row border doesn't travel with a sticky header.
+        <div className="overflow-auto" style={{ maxHeight: MAX_TABLE_HEIGHT }}>
           <table className="w-full text-left border-collapse text-[13px]">
             <thead>
-              <tr style={{ borderBottom: `1px solid ${palette.border}` }}>
-                {allColumns.map((c) => (
+              <tr>
+                {allColumns.map((c, i) => (
                   <th
                     key={c.key}
-                    className={`p-2 font-semibold uppercase text-[11px] ${c.align === 'right' ? 'text-right' : 'text-left'}`}
-                    style={{ color: palette.inkMuted }}
+                    aria-sort={controlled ? ariaSort(controls, c.key) : undefined}
+                    className={`p-2 font-semibold uppercase text-[11px] sticky top-0 z-10 align-bottom ${c.align === 'right' ? 'text-right' : 'text-left'}`}
+                    style={{ color: palette.inkMuted, background: palette.surface, boxShadow: `inset 0 -1px 0 ${palette.border}` }}
                   >
-                    {c.label}
+                    {controlled ? <ColumnHeading column={controlColumns[i]} controls={controls} palette={palette} /> : c.label}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
+              {controlled && <NoMatches controls={controls} palette={palette} span={allColumns.length} />}
               {pageRows.map((row, idx) => {
                 const rowIdx = isEditing ? page * ROWS_PER_PAGE + idx : idx;
                 const isStriped = striped && idx % 2 === 1;

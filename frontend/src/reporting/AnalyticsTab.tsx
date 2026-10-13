@@ -6,6 +6,8 @@ import { fetchReportingKpis } from '../services/reportingKpis';
 import { formatCoverage } from '../services/reportingRefresh';
 import { KpiCard, rateLevel } from './components/KpiCard';
 import { EditableTable, EditableColumn } from './components/EditableTable';
+import { LateRuleNote } from './components/LateRuleNote';
+import { DatePresets, firstOfThisMonth, localDay } from './components/DatePresets';
 import { ClientMultiSelect, ClientOption, decodeClients, encodeClients } from './components/ClientMultiSelect';
 import { TrendChart } from './charts/TrendChart';
 import { PriorityChart } from './charts/PriorityChart';
@@ -16,13 +18,9 @@ import { OverdueAgeingSection } from './overdueAgeing/OverdueAgeingSection';
 import { buildExcelReport } from './export/buildExcelReport';
 import { buildPdfReport } from './export/buildPdfReport';
 
-function firstOfMonth(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-}
-function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+const firstOfMonth = firstOfThisMonth;
+// Today here, not in UTC — see localDay.
+const todayStr = (): string => localDay();
 function formatDisplayDate(v: string | null): string {
   if (!v) return '';
   const d = new Date(v.replace(/\//g, '-'));
@@ -58,7 +56,6 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
   const [exportError, setExportError] = useState<string | null>(null);
   const [excelBlob, setExcelBlob] = useState<{ blob: Blob; filename: string } | null>(null);
   const [pdfBlob, setPdfBlob] = useState<{ blob: Blob; filename: string } | null>(null);
-  const [ascending, setAscending] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetchReportingClients().then(setOtherClients).catch(() => {});
@@ -117,23 +114,29 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
   const compliant = complianceRows.filter((r) => r.status === 'Met').length;
   const hasWork = (data?.summary.issued ?? 0) > 0;
   const loading = !data && !loadError;
+  // The server has not read work orders from AroFlo since it started. Not
+  // the same as "none in this range": there is nothing to count yet.
+  const notLoaded = Boolean(data) && !data?.meta.lastFetchedAt;
 
-  function sortedRows(rows: BreakdownRow[], priority: string): BreakdownRow[] {
-    const asc = ascending[priority] ?? false;
-    const sorted = [...rows].sort((a, b) => (a.requestDate || '').localeCompare(b.requestDate || ''));
-    return asc ? sorted : sorted.reverse();
+  // The order the tables open in: most recently requested first. Clicking a
+  // column heading re-sorts from there.
+  function sortedRows(rows: BreakdownRow[]): BreakdownRow[] {
+    return [...rows].sort((a, b) => (b.requestDate || '').localeCompare(a.requestDate || ''));
   }
 
+  // `filter` is the kind of filter under each heading: a list to pick from
+  // where the column holds a handful of values, "at least" for the count,
+  // and a box to type in for the rest (dates included — "sep" finds them).
   const breakdownColumns: EditableColumn[] = [
     { key: 'taskId', label: 'Task ID' },
-    { key: 'client', label: 'Client' },
+    { key: 'client', label: 'Client', filter: 'choice' },
     { key: 'requestDate', label: 'Requested Date' },
     { key: 'actualStartDate', label: 'Actual Start Date' },
     { key: 'requiredCompletedDate', label: 'Required Completed Date' },
     { key: 'completedDate', label: 'Completed Date' },
-    { key: 'delayReason', label: 'Delay Reason' },
-    { key: 'currentSubstatus', label: 'Substatus' },
-    { key: 'daysLate', label: 'Days Late', align: 'right' },
+    { key: 'delayReason', label: 'Delay Reason', filter: 'choice' },
+    { key: 'currentSubstatus', label: 'Substatus', filter: 'choice' },
+    { key: 'daysLate', label: 'Days Late', align: 'right', filter: 'number' },
   ];
 
   function breakdownCellStyle(colKey: string, row: Record<string, string | number | null>): React.CSSProperties | undefined {
@@ -180,7 +183,7 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
                   </p>
                 );
               }
-              const sorted = sortedRows(rowsForPriority, priority);
+              const sorted = sortedRows(rowsForPriority);
               const runningLate = sorted.filter((r) => (r.daysLate || 0) > 0).length;
               const avgVariance = sorted.length ? sorted.reduce((s, r) => s + (r.daysLate || 0), 0) / sorted.length : null;
               return (
@@ -194,18 +197,8 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
                     striped={striped}
                     cellStyle={breakdownCellStyle}
                     formatCell={breakdownFormatCell}
-                    extraHeaderControls={
-                      <button
-                        onClick={() => setAscending((prev) => ({ ...prev, [priority]: !(prev[priority] ?? false) }))}
-                        title="Toggle sort by Requested Date"
-                        className="p-1 rounded-md hover:opacity-70"
-                        style={{ color: palette.inkMuted }}
-                      >
-                        <span className="material-symbols-outlined text-[18px]">
-                          {ascending[priority] ? 'arrow_upward' : 'arrow_downward'}
-                        </span>
-                      </button>
-                    }
+                    filterable
+                    quickFilters={[{ label: 'Late only', column: 'daysLate', value: '1' }]}
                   />
                   <div
                     className="rounded-md flex items-center gap-6 px-4 py-2 text-[12px]"
@@ -304,6 +297,16 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
           />
         </label>
       </div>
+      <DatePresets
+        palette={palette}
+        from={dateFrom}
+        to={dateTo}
+        coverageFrom={coverageFrom}
+        onPick={(from, to) => {
+          setDateFrom(from);
+          setDateTo(to);
+        }}
+      />
       {dateFrom > dateTo && (
         <p className="text-[12px]" style={{ color: palette.statusWarningText }}>
           Start date was after the end date — using a single-day range.
@@ -358,6 +361,13 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
             . A job that is open and not yet due counts as on time.
           </li>
           <li>
+            <b>Against the KPI Matrix.</b> A job that is overdue here is late on its priority’s Completed row there, for
+            the same clients and month — the counts agree. The percentages are worked differently: there a job that is
+            open and not yet due is left out until it is finished or overdue, so the Matrix can read lower while work is
+            in progress. The Matrix also scores when a job was started, which this page does not, and puts level 5 in
+            its P4 row.
+          </li>
+          <li>
             <b>Priorities.</b> Named as AroFlo names them. AP1–AP5 are counted with P1–P5, and SM with PM. P5 has no target,
             so it is in no compliance row. A work order with another priority, or none, is in General Statistics but not in
             the priority sections.
@@ -367,8 +377,13 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
             due date in AroFlo.
           </li>
           <li>
-            <b>Delay Reason</b> — filled only from substatuses set up as delay reasons, and none are set up yet, so it reads
-            “-”. The Substatus column shows the job’s current substatus.
+            <b>Delay Reason</b> — for late jobs only, and only as far as AroFlo records one. It is the job’s current
+            substatus when that is Non Access, Materials Ordered, On Hold/Materials Required or Sent to Procurement — a
+            job in one of those that is not past due shows no reason. Otherwise the job’s notes
+            are searched for wording about access or materials, and a match is marked “(from notes)” — a keyword match, so
+            treat it as a prompt to read the job, not a finding. “-” means neither gave a reason. AroFlo keeps no history of
+            substatuses, so a job that was held up and has since moved on shows a reason only if a note says so. Delay
+            reasons do not change any figure: a late job counts as late whatever the cause.
           </li>
           <li>
             <b>Clients.</b> Opens on {config ? Object.values(config.targetClients).join(' + ') : 'the contract clients'}{' '}
@@ -380,13 +395,24 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
         </ul>
       </details>
 
+      {!notLoaded && <LateRuleNote palette={palette} />}
+
       {loading && (
         <div className="rounded-md p-6 text-center text-[13px]" style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkMuted }}>
           Loading…
         </div>
       )}
 
-      {data && !hasWork && (
+      {notLoaded && (
+        <div
+          className="rounded-md p-6 text-[13px]"
+          style={{ background: 'rgba(2,132,199,0.08)', border: `1px solid ${palette.border}`, color: palette.inkSecondary }}
+        >
+          No work orders are loaded yet. Press <b>Refresh from AroFlo</b> at the top of the page.
+        </div>
+      )}
+
+      {data && !hasWork && !notLoaded && (
         <div
           className="rounded-md p-6 text-[13px]"
           style={{ background: 'rgba(2,132,199,0.08)', border: `1px solid ${palette.border}`, color: palette.inkSecondary }}
@@ -398,8 +424,11 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
       )}
 
       {/* Overdue & Ageing Work — independent of the date range (it's "what's open
-          right now"), so it renders even when nothing was requested in-range. */}
-      <OverdueAgeingSection palette={palette} striped={striped} view={view} dataVersion={dataVersion} coverageFrom={coverageFrom} />
+          right now"), so it renders even when nothing was requested in-range.
+          Not before anything is loaded, though: "0 overdue" would be a claim. */}
+      {!notLoaded && (
+        <OverdueAgeingSection palette={palette} striped={striped} view={view} dataVersion={dataVersion} coverageFrom={coverageFrom} />
+      )}
 
       {data && hasWork && (
         <>
@@ -574,7 +603,8 @@ export const AnalyticsTab: React.FC<Props> = ({ palette, striped, config, dataVe
               Reports reflect the current selection ({formatDisplayDate(effectiveDateFrom)} – {formatDisplayDate(effectiveDateTo)} ·{' '}
               {viewLabel}) exactly as shown on screen, including any manual edits —
               print/save as-is. The General Statistics KPI row is always computed from the real underlying data, since it
-              isn't itself an editable table.
+              isn't itself an editable table. Sorting or filtering a table is for looking at it here: the reports list
+              every row, in their usual order.
             </p>
             {exportError && (
               <p className="text-[12px] mb-2" style={{ color: palette.statusCritical }}>

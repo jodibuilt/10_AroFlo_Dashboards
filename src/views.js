@@ -2,9 +2,24 @@ const config = require('./config');
 const { parseAroFloDateTime } = require('./aroflo/aroFloDates');
 const { daysBetween, isPastDate } = require('./normalize');
 const kpi = require('./kpi');
+const { delayReasonFor } = require('./delayReason');
 
 const REPORTING_BREAKDOWN_PRIORITIES = ['P1', 'P2', 'P3', 'P4'];
 const REPORTING_PM_PRIORITIES = ['P5', 'PM'];
+const NO_PRIORITY = 'No priority';
+
+// The order priorities are listed in wherever they are listed: up the scale,
+// P1 to P4, then P5 and PM — not by how many jobs each has. A priority with
+// no level on the scale comes after those, by name, and "No priority" last.
+const PRIORITY_SCALE = [...REPORTING_BREAKDOWN_PRIORITIES, ...REPORTING_PM_PRIORITIES];
+function comparePriorities(a, b) {
+  const rank = (p) => {
+    const onScale = PRIORITY_SCALE.indexOf(p);
+    if (onScale !== -1) return onScale;
+    return p === NO_PRIORITY ? PRIORITY_SCALE.length + 1 : PRIORITY_SCALE.length;
+  };
+  return rank(a) - rank(b) || String(a).localeCompare(String(b));
+}
 
 // Several clients can be picked at once: they arrive as one `view` value,
 // joined with this (frontend: reporting/components/ClientMultiSelect.tsx).
@@ -65,15 +80,27 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
   // priorityLabel, hence the swap.
   const pCoded = scoped.filter((t) => t.priorityCode).map((t) => ({ ...t, priorityLabel: t.priorityCode }));
 
-  // The "Task ID" people know is AroFlo's job number. The record's own
-  // `taskid` is an opaque internal code ("JidaLyxQPEciCg=="), so the
-  // breakdown rows carry the job number in that field — the table on screen
-  // and the Excel / PDF exports all print it as-is.
-  const withJobNumbers = (rows) => rows.map((r) => ({ ...r, taskId: r.jobNumber || r.taskId }));
+  // Two things kpi.buildBreakdownTable's rows get before they go out:
+  //
+  // The delay reason, from the job's substatus or else its notes
+  // (src/delayReason.js) — kpi.js's own only knows an exact substatus match.
+  //
+  // And the "Task ID" people know, which is AroFlo's job number. The
+  // record's own `taskid` is an opaque internal code ("JidaLyxQPEciCg=="),
+  // so the rows carry the job number in that field — the table on screen and
+  // the Excel / PDF exports all print it as-is.
+  const byTaskId = new Map(pCoded.map((t) => [t.taskId, t]));
+  const finishRows = (rows) =>
+    rows.map((r) => ({
+      ...r,
+      delayReason: delayReasonFor(byTaskId.get(r.taskId) || {}, r.daysLate),
+      taskId: r.jobNumber || r.taskId,
+    }));
 
   // test_all_aroflo fills this from its trigger engine's substatus history.
-  // There is no engine here, so the breakdown's delay reason always falls
-  // back to each task's CURRENT substatus (kpi.buildBreakdownTable).
+  // There is no engine here, so kpi.buildBreakdownTable works from each
+  // task's CURRENT substatus — and finishRows above then replaces the delay
+  // reason it comes up with.
   const breakdownOpts = { delayRelevantByTaskId: {}, delayReasonsOfInterest: delayReasonSubstatuses };
 
   return {
@@ -85,10 +112,10 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
       openInSystem: tasksInView(records, view).filter(isOpen).length,
     },
     priorityCompliance: kpi.computePriorityKpiCompliance(pCoded, priorityTargets),
-    breakdown: withJobNumbers(
+    breakdown: finishRows(
       kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_BREAKDOWN_PRIORITIES, ascending: false, ...breakdownOpts }),
     ),
-    pmBreakdown: withJobNumbers(
+    pmBreakdown: finishRows(
       kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_PM_PRIORITIES, ascending: false, ...breakdownOpts }),
     ),
     // Raw scoped tasks (NOT priority-filtered) for the frontend's own chart
@@ -170,7 +197,7 @@ function buildOverdueAgeing(cache, { view } = {}) {
     // Grouped by level where the priority has one, so P1 and AP1 count
     // together; anything off the scale keeps the name AroFlo gives it. Each
     // row also carries that name as-is, for the table.
-    const priorityName = t.priorityLabel || 'No priority';
+    const priorityName = t.priorityLabel || NO_PRIORITY;
     const priority = t.priorityCode || priorityName;
     const client = t.client || 'Unknown';
     const site = t.locationName || 'Unknown';
@@ -204,7 +231,7 @@ function buildOverdueAgeing(cache, { view } = {}) {
       total: overdue.length,
       oldestDays: rows.length ? rows[0].daysOverdue : null,
       buckets: OVERDUE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: bucketCounts[b.key] })),
-      byPriority: [...byPriority.values()].sort((a, b) => b.total - a.total),
+      byPriority: [...byPriority.values()].sort((a, b) => comparePriorities(a.priority, b.priority)),
       byClient: [...byClient.entries()].map(([client, total]) => ({ client, total })).sort((a, b) => b.total - a.total),
       bySite: [...bySite.entries()].map(([site, total]) => ({ site, total })).sort((a, b) => b.total - a.total),
       rows,
@@ -423,23 +450,36 @@ function buildInvoicingReport(cache, { view, dateFrom, dateTo } = {}) {
 // them: a task's invoice date, checklists and compliance forms (KPIs 12-14).
 function buildKpiMatrixTasks(cache) {
   const { records, lastFetchedAt, error } = cache.get('jobs');
+  // The matrix has to call the same jobs late that the Work Orders page calls
+  // overdue (kpi.isOverdue), so it is handed "finished" and "due" the way
+  // that page reads them:
+  //   - finished is what the status says (COMPLETED_TASK_STATUSES). A
+  //     reopened job can still carry the date it was first completed; it is
+  //     open, and goes over as open.
+  //   - a finished job with no completed date can't be judged against its
+  //     due date — Work Orders leaves it out of Overdue — so it goes over
+  //     with no due date, rather than looking like an open job run past it.
   return {
-    data: records.map((t) => ({
-      jobNumber: t.jobNumber,
-      taskName: t.taskName,
-      client: t.client,
-      status: t.status,
-      substatus: t.substatus,
-      // The matrix tiers on the P-scale, so it gets the level. A priority
-      // without one goes over under its AroFlo name (or bare id), so the
-      // matrix's diagnostics can say what it is instead of silently dropping it.
-      priority: t.priorityCode || t.priorityLabel || t.priorityId,
-      requestedAt: t.requestDateTime || t.requestDate,
-      dueAt: t.dueDateTime || t.dueDate,
-      startedAt: t.actualStartDate,
-      completedAt: t.completedDateTime || t.completedDate,
-      description: t.description,
-    })),
+    data: records.map((t) => {
+      const open = isOpen(t);
+      const completedAt = open ? null : t.completedDateTime || t.completedDate || null;
+      return {
+        jobNumber: t.jobNumber,
+        taskName: t.taskName,
+        client: t.client,
+        status: t.status,
+        substatus: t.substatus,
+        // The matrix tiers on the P-scale, so it gets the level. A priority
+        // without one goes over under its AroFlo name (or bare id), so the
+        // matrix's diagnostics can say what it is instead of silently dropping it.
+        priority: t.priorityCode || t.priorityLabel || t.priorityId,
+        requestedAt: t.requestDateTime || t.requestDate,
+        dueAt: !open && !completedAt ? null : t.dueDateTime || t.dueDate,
+        startedAt: t.actualStartDate,
+        completedAt,
+        description: t.description,
+      };
+    }),
     meta: { lastFetchedAt, error },
   };
 }

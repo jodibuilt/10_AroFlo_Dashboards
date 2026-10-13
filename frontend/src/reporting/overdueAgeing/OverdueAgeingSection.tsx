@@ -6,6 +6,7 @@ import { KpiCard, rateLevel } from '../components/KpiCard';
 import { OverdueAgeingResponse } from '../types';
 import { fetchOverdueAgeing } from '../../services/reportingOverdue';
 import { formatCoverage } from '../../services/reportingRefresh';
+import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, NoMatches, useTableControls } from '../components/tableControls';
 
 interface Props {
   palette: Palette;
@@ -38,6 +39,21 @@ function fmtDate(v: string | null): string {
   if (isNaN(d.getTime())) return v;
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
+
+type OverdueRow = OverdueAgeingResponse['data']['rows'][number];
+
+// The detail table's columns, as its headings sort and filter them
+// (components/tableControls.tsx). Text is what the cell shows.
+const DETAIL_COLUMNS: ControlColumn<OverdueRow>[] = [
+  { key: 'job', label: 'Job', text: (r) => String(r.jobNumber ?? '') },
+  { key: 'task', label: 'Task', text: (r) => String(r.taskName ?? '') },
+  { key: 'priority', label: 'Priority', filter: 'choice', text: (r) => String(r.priorityName ?? r.priority ?? '') },
+  { key: 'client', label: 'Client', filter: 'choice', text: (r) => String(r.client ?? '') },
+  { key: 'site', label: 'Site', text: (r) => String(r.site ?? '') },
+  { key: 'due', label: 'Due', text: (r) => fmtDate(r.dueDate), sortValue: (r) => r.dueDate },
+  { key: 'days', label: 'Days overdue', filter: 'number', align: 'right', text: (r) => String(r.daysOverdue ?? ''), sortValue: (r) => r.daysOverdue },
+  { key: 'status', label: 'Status', filter: 'choice', text: (r) => String(r.status ?? '') },
+];
 
 // `yref: 'container'` is newer than the bundled Plotly typings.
 function pinnedLegend(palette: Palette): Partial<Layout['legend']> {
@@ -81,6 +97,10 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view, 
   }, [d, priorityFilter]);
 
   const cardStyle: React.CSSProperties = { background: palette.surface, border: `1px solid ${palette.border}` };
+
+  // Sorting and a filter per column for the detail table. It opens most
+  // overdue first, as the server sends it.
+  const controls = useTableControls(shownRows, DETAIL_COLUMNS);
 
   return (
     <div>
@@ -168,7 +188,10 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view, 
                       legend: pinnedLegend(palette),
                       margin: { l: 20, r: 30, t: 64, b: 96 },
                       xaxis: { ...baseLayout(palette, { title: '' }).xaxis, title: { text: 'Work orders', standoff: 12 } },
-                      yaxis: { ...baseLayout(palette, { title: '' }).yaxis, automargin: true },
+                      // The priorities arrive in scale order, P1 first. A
+                      // bar chart draws its first category at the bottom, so
+                      // the axis is flipped to read P1 down to PM.
+                      yaxis: { ...baseLayout(palette, { title: '' }).yaxis, automargin: true, autorange: 'reversed' },
                     }}
                     config={PLOT_CONFIG}
                     style={{ width: '100%', height: Math.max(260, d.byPriority.length * 46 + 130) }}
@@ -203,24 +226,27 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view, 
                 </div>
               </div>
 
-              {/* Detail table */}
-              <div className="flex items-center gap-2 mb-2">
-                <label className="text-[12px]" style={{ color: palette.inkSecondary }}>
-                  Priority
+              {/* Detail table. The level picker groups as the chart does (AP1
+                  with P1); the Priority column under it filters by the name
+                  AroFlo gives, which is what the column shows. */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2">
+                <label className="text-[12px] inline-flex items-center gap-2" style={{ color: palette.inkSecondary }}>
+                  Priority level
+                  <select
+                    value={priorityFilter}
+                    onChange={(e) => setPriorityFilter(e.target.value)}
+                    className="px-2 py-1 rounded-md text-[12px]"
+                    style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
+                  >
+                    <option value="__all__">All ({d.rows.length})</option>
+                    {priorities.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
                 </label>
-                <select
-                  value={priorityFilter}
-                  onChange={(e) => setPriorityFilter(e.target.value)}
-                  className="px-2 py-1 rounded-md text-[12px]"
-                  style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
-                >
-                  <option value="__all__">All ({d.rows.length})</option>
-                  {priorities.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
+                <ControlSummary controls={controls} palette={palette} noun="work orders" />
               </div>
               {/* The surface background is what makes the stripes show: striped
                   rows are the page colour, so on a bare page they vanish. */}
@@ -228,19 +254,21 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view, 
                 <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
                   <thead>
                     <tr>
-                      {['Job', 'Task', 'Priority', 'Client', 'Site', 'Due', 'Days overdue', 'Status'].map((h) => (
+                      {DETAIL_COLUMNS.map((c) => (
                         <th
-                          key={h}
-                          className="text-left px-3 py-2 font-semibold sticky top-0 z-10"
+                          key={c.key}
+                          aria-sort={ariaSort(controls, c.key)}
+                          className={`px-3 py-2 font-semibold sticky top-0 z-10 align-bottom ${c.align === 'right' ? 'text-right' : 'text-left'}`}
                           style={{ color: palette.inkSecondary, background: palette.pagePlane }}
                         >
-                          {h}
+                          <ColumnHeading column={c} controls={controls} palette={palette} />
                         </th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {shownRows.map((r, i) => (
+                    <NoMatches controls={controls} palette={palette} span={DETAIL_COLUMNS.length} />
+                    {controls.rows.map((r, i) => (
                       <tr key={r.taskId || `${r.jobNumber}-${i}`} style={{ background: striped && i % 2 ? palette.pagePlane : 'transparent' }}>
                         <td className="px-3 py-1.5">{r.jobNumber}</td>
                         <td className="px-3 py-1.5">{r.taskName}</td>

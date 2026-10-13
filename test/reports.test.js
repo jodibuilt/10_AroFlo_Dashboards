@@ -134,6 +134,57 @@ test('the breakdown tables show the job number as the Task ID', () => {
   assert.equal(row.daysLate, 3);
 });
 
+test('Delay Reason: a late job’s current substatus, or else what its notes say', () => {
+  const late = { priority: 'id-p2', due: day(-3) };
+  const cases = [
+    ['held for access', { ...late, substatus: 'Non Access' }, 'Non Access'],
+    ['held for materials', { ...late, substatus: 'Materials Ordered' }, 'Materials Ordered'],
+    ['shown as AroFlo writes it', { ...late, substatus: 'NON-ACCESS' }, 'NON-ACCESS'],
+    ['past due and with procurement', { ...late, substatus: 'Sent to Procurement' }, 'Sent to Procurement'],
+    ['with procurement, but not past due', { priority: 'id-p2', due: day(6), substatus: 'Sent to Procurement' }, '-'],
+    ['with procurement, finished on time', { priority: 'id-p2', status: 'Completed', due: day(-2), completed: day(-3), substatus: 'Sent to Procurement' }, '-'],
+    ['finished late, still marked on hold', { priority: 'id-p2', status: 'Completed', due: day(-9), completed: day(-6), substatus: 'On Hold/Materials Required' }, 'On Hold/Materials Required'],
+    ['another substatus, a note about access', { ...late, substatus: 'Scheduled', notes: ['Attended site.', 'Tenant not home — <b>no access</b>, card left'] }, 'Non Access (from notes)'],
+    ['a note about an order', { ...late, notes: ['Hot water unit ordered, ETA Friday'] }, 'Materials Ordered (from notes)'],
+    ['a note about parts', { ...late, notes: ['Waiting on parts'] }, 'On Hold/Materials Required (from notes)'],
+    ['the substatus wins over the notes', { ...late, substatus: 'Non Access', notes: ['Parts ordered'] }, 'Non Access'],
+    ['late, and nothing says why', { ...late, substatus: 'Scheduled', notes: ['Called the tenant'] }, '-'],
+    ['late, no substatus or notes at all', late, '-'],
+    ['on time: no reason is given, whatever the substatus', { priority: 'id-p2', due: day(4), substatus: 'Non Access', notes: ['no access'] }, '-'],
+    ['finished on time', { priority: 'id-p2', status: 'Completed', due: day(-2), completed: day(-2), substatus: 'Materials Ordered' }, '-'],
+    ['no due date', { priority: 'id-p2', substatus: 'Non Access' }, '-'],
+  ];
+  const jobs = cases.map(([, fields], i) => task({ ...fields, job: 7000 + i }));
+  const { breakdown } = buildReportingKpis(cacheOf({ jobs }), { dateFrom: day(-30), dateTo: day(0), view: 'overall' });
+  const reasons = Object.fromEntries(breakdown.map((r) => [r.taskId, r.delayReason]));
+  cases.forEach(([what, , reason], i) => assert.equal(reasons[7000 + i], reason, what));
+  // The same on the P5 / PM table.
+  const pm = [task({ priority: 'id-pm', due: day(-2), substatus: 'Materials Ordered' })];
+  assert.equal(buildReportingKpis(cacheOf({ jobs: pm }), { dateFrom: day(-30), dateTo: day(0), view: 'overall' }).pmBreakdown[0].delayReason, 'Materials Ordered');
+});
+
+test('a delay reason explains a late job without changing any figure', () => {
+  const fields = { priority: 'id-p1', due: day(-2) };
+  const figures = (extra) => {
+    const result = buildReportingKpis(cacheOf({ jobs: [task({ ...fields, ...extra }), task({ priority: 'id-p1', due: day(3) })] }), { dateFrom: day(-30), dateTo: day(0), view: 'overall' });
+    return [result.summary.overdue, result.priorityCompliance[0].actualPercent];
+  };
+  assert.deepEqual(figures({ substatus: 'Non Access' }), figures({}));
+  assert.deepEqual(figures({}), [1, 50]);
+});
+
+test('a job’s notes are read as plain text, oldest first, and stay on the server', () => {
+  const t = task({ notes: ['<p>First&nbsp;visit</p>', '', '  Second <br/> visit  '] });
+  assert.equal(t.notes, 'First visit | Second visit');
+  assert.equal(task({}).notes, '');
+  const sent = JSON.stringify([
+    buildReportingKpis(cacheOf({ jobs: [t] }), { dateFrom: day(-30), dateTo: day(0), view: 'overall' }),
+    buildOverdueAgeing(cacheOf({ jobs: [t] }), { view: 'overall' }),
+    buildKpiMatrixTasks(cacheOf({ jobs: [t] })),
+  ]);
+  assert.ok(!sent.includes('First visit'));
+});
+
 test('Overdue & Ageing: only open work past its due date, in the right age band', () => {
   const overdueBy = [1, 7, 8, 14, 15, 30, 31, 90];
   const jobs = [
@@ -169,6 +220,31 @@ test('Overdue & Ageing groups AP with P but shows each job under its AroFlo name
   const { data } = buildOverdueAgeing(cacheOf({ jobs }), { view: 'overall' });
   assert.deepEqual(Object.fromEntries(data.byPriority.map((p) => [p.priority, p.total])), { P1: 2, PHONECALL: 1, 'No priority': 1 });
   assert.deepEqual(data.rows.map((r) => r.priorityName).sort(), ['AP1', 'No priority', 'P1', 'PHONECALL']);
+});
+
+test('Overdue & Ageing lists priorities up the scale, P1 to P4 then P5 and PM, not by how many jobs each has', () => {
+  const overdue = (priority, count) => Array.from({ length: count }, () => task({ priority, due: day(-2) }));
+  const jobs = [
+    ...overdue('', 6),
+    ...overdue('id-phone', 5),
+    ...overdue('id-pm', 4),
+    ...overdue('id-p3', 3),
+    ...overdue('id-ap5', 2),
+    ...overdue('id-p4', 2),
+    ...overdue('id-ap1', 1),
+    ...overdue('id-p2', 1),
+  ];
+  const { data } = buildOverdueAgeing(cacheOf({ jobs }), { view: 'overall' });
+  assert.deepEqual(data.byPriority.map((p) => [p.priority, p.total]), [
+    ['P1', 1],
+    ['P2', 1],
+    ['P3', 3],
+    ['P4', 2],
+    ['P5', 2],
+    ['PM', 4],
+    ['PHONECALL', 5], // not on the scale: after it, by name
+    ['No priority', 6],
+  ]);
 });
 
 test('Invoicing: submitted, paid and unpaid, by client group', () => {
@@ -217,4 +293,20 @@ test('the KPI Matrix feed carries the level, and a midnight due stays a date', (
   assert.deepEqual(data.map((t) => [t.jobNumber, t.priority]), [['501', 'P5'], ['502', 'PHONECALL'], ['503', '']]);
   assert.equal(data[0].dueAt, `${day(2)} 00:00:00`);
   assert.equal(data[0].completedAt, null);
+});
+
+test('the KPI Matrix feed calls a job finished when Work Orders does: by its status', () => {
+  const jobs = [
+    task({ job: 601, status: 'Archived', due: day(-5), completed: day(-6) }),
+    task({ job: 602, status: 'In Progress', due: day(-5), completed: day(-6) }), // reopened: open again
+    task({ job: 603, status: 'Not Started', due: day(-5) }),
+    task({ job: 604, status: 'Completed', due: day(-5) }), // finished, but AroFlo holds no completed date
+  ];
+  const { data } = buildKpiMatrixTasks(cacheOf({ jobs }));
+  assert.deepEqual(data.map((t) => [t.jobNumber, t.completedAt]), [['601', `${day(-6)} 15:00:00`], ['602', null], ['603', null], ['604', null]]);
+  // And Work Orders agrees which of them are overdue: the two that are open.
+  assert.deepEqual(jobs.map((t) => kpi.isOverdue(t)), [false, true, true, false]);
+  // The one that can't be judged goes over without a due date, so the
+  // matrix doesn't take it for an open job that has run past it.
+  assert.deepEqual(data.map((t) => Boolean(t.dueAt)), [true, true, true, false]);
 });

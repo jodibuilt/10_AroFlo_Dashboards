@@ -53,6 +53,27 @@ function earliestLabourStart(raw) {
   return starts.length ? starts[0] : null;
 }
 
+// The staff notes on a task as one line of plain text, oldest first. Only
+// there when the Tasks fetch asks for `join=notes` (src/cache.js) — without
+// it AroFlo sends `tasknotes: []` for every task. Read for a late job's
+// likely delay reason (src/delayReason.js); never sent to the browser.
+function flattenNotes(raw) {
+  const notes = Array.isArray(raw.tasknotes) ? raw.tasknotes.filter((n) => n && typeof n === 'object') : [];
+  const posted = (n) => `${cleanStr(n.dateposted)} ${cleanStr(n.timeposted)}`;
+  return notes
+    .slice()
+    .sort((a, b) => posted(a).localeCompare(posted(b)))
+    .map((n) =>
+      String(cleanStr(n.content))
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter(Boolean)
+    .join(' | ');
+}
+
 // Tasks.client is {clientid, clientname} but Invoices.client is
 // {orgid, orgname} — a real inconsistency in AroFlo's own v1 schema, not a
 // normalization bug here.
@@ -97,6 +118,7 @@ function normalizeTask(raw, priorities = new Map()) {
     dueDateTime: cleanStr(raw.duedatetime) || null,
     completedDateTime: cleanStr(raw.completeddatetime) || null,
     description: cleanStr(raw.description),
+    notes: flattenNotes(raw),
   };
 }
 

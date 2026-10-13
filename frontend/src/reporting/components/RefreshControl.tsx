@@ -118,15 +118,18 @@ export const RefreshControl: React.FC<Props> = ({ palette, onRefreshed, onCovera
   else if (loaded) headline = `AroFlo data as of ${when(status.lastRefreshCompletedAt as string)}`;
   else headline = 'Nothing has been loaded from AroFlo since the server started. Press Refresh to load it.';
 
+  // The button keeps its place at the right of the bar however long the text
+  // beside it gets — the text wraps, the button doesn't drop under it. Only
+  // on a phone-width screen does it go on its own line.
   return (
     <div
-      className="rounded-md px-4 py-3 flex flex-wrap items-center justify-between gap-3"
+      className="rounded-md px-4 py-3 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3"
       style={{
         background: loaded || refreshing || !status ? palette.surface : 'rgba(2,132,199,0.08)',
         border: `1px solid ${palette.border}`,
       }}
     >
-      <div className="min-w-0 text-[12px]">
+      <div className="min-w-0 flex-1 basis-full sm:basis-0 text-[12px]">
         <div className="text-[13px] font-semibold" style={{ color: palette.inkPrimary }} role="status" aria-live="polite">
           {headline}
         </div>

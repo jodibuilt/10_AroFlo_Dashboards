@@ -66,7 +66,7 @@ function splitDateTime(value: string | null): [string, string] {
 
 function toExportRow(t: LiveKpiTask): CsvRow {
   const [requestedDate, requestedTime] = splitDateTime(t.requestedAt);
-  const [dueDate, dueTime] = splitDateTime(t.dueAt);
+  const [dueDate] = splitDateTime(t.dueAt);
   const [startDate, startTime] = splitDateTime(t.startedAt);
   const [completedDate, completedTime] = splitDateTime(t.completedAt);
   return {
@@ -78,11 +78,13 @@ function toExportRow(t: LiveKpiTask): CsvRow {
     'Requested Date': requestedDate,
     'Requested Time': requestedTime,
     'Task Due Date': dueDate,
-    // AroFlo stores a due date that has no time as midnight at the START of
-    // that day, which would make a job finished during its due day read as
-    // late. Count it as due by the end of the day — the same day-level
-    // comparison the Work Orders report makes (src/kpi.js).
-    'Task Due Time': !dueTime || dueTime === '00:00:00' ? '23:59:59' : dueTime,
+    // Due by the end of the due day, whatever time AroFlo holds against it:
+    // the Work Orders report compares days (src/kpi.js), the contract's
+    // windows are in calendar days, and a job the one page calls on time
+    // must not be late on the other. (A due date with no time is stored as
+    // midnight at the START of the day — read literally, a job finished
+    // during its due day would be late.)
+    'Task Due Time': dueDate ? '23:59:59' : '',
     // Stands in for the export's Schedule Start: the first labour entry
     // logged on the job. A task carries no schedule of its own in the API.
     'Schedule Start Date': startDate,

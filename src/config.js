@@ -78,8 +78,19 @@ const config = {
       IydaKy0K: 'Standard',
       IydKTyQK: 'After Hours',
     }),
-    // A business decision, not a technical unknown — ships empty.
-    delayReasonSubstatuses: parseList(process.env.KPI_DELAY_REASON_SUBSTATUSES, []),
+    // The substatuses that mean a job is held up for a reason outside the
+    // team's control — what "Delay Reason" reports for a late job
+    // (src/delayReason.js). The first three are the TTS account's own,
+    // confirmed for the earlier dashboard; "Sent to Procurement" is waiting
+    // on materials too (confirmed 2026-10-12). Like the rest it is only a
+    // reason on a job that is past due — a job sitting in procurement with
+    // time in hand is not late. Matched without regard to case.
+    delayReasonSubstatuses: parseList(process.env.KPI_DELAY_REASON_SUBSTATUSES, [
+      'Non Access',
+      'Materials Ordered',
+      'On Hold/Materials Required',
+      'Sent to Procurement',
+    ]),
   },
   // Reporting Dashboard (ported from aroflo_dash). Its P1-P5/PM structure and
   // SLA percentages are aroflo_dash's own generic reporting convention kept

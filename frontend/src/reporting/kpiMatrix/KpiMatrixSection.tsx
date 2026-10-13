@@ -13,9 +13,11 @@ import {
   Tier,
 } from './config';
 import { buildDataset, buildDatasetFromRows, Diagnostics, KpiTaskRow } from './ingest';
-import { computeKpis, fmtPct, KpiResult, lateJobs, reconcile } from './engine';
+import { computeKpis, fmtPct, KpiResult, LateJob, lateJobs, reconcile } from './engine';
 import { buildKpiMatrixWorkbook } from './exportMatrix';
 import { fetchLiveKpiRows, LIVE_CLIENT_COLUMN, LiveKpiRows } from '../../services/reportingKpiMatrix';
+import { LateRuleNote } from '../components/LateRuleNote';
+import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, NoMatches, useTableControls } from '../components/tableControls';
 import { ClientMultiSelect } from '../components/ClientMultiSelect';
 import { formatCoverage } from '../../services/reportingRefresh';
 
@@ -51,6 +53,7 @@ function unmeasured(def: KpiDef): KpiResult {
 
 const LIVE_CAPTION =
   'On-time % covers jobs started within their response window and finished by their due date. ' +
+  'A job still open past its due date counts as late. ' +
   'Commenced uses the first labour entry logged on the job. Contributing factors are conditions ' +
   'present on the job, not confirmed causes of delay.';
 
@@ -58,7 +61,9 @@ const LIVE_ASSUMPTIONS = [
   'Tiers come from AroFlo’s own priority names: AP1–AP4 count with P1–P4, level 5 (AP5) sits in the P4 (30-day) tier, and SM counts as PM. A priority with no level in its name is left out of the tiered rows.',
   'Commenced KPIs use the first labour entry logged on the job. A job with no labour logged is not scored for commencement.',
   "Completion is judged against AroFlo's own Task Due Date, not the computed contractual SLA date. Those due dates are frequently defaulted / generous.",
-  'A due date with no time is treated as due by the end of that day.',
+  'Late on a Completed row means what Overdue means on the Work Orders page: finished after the due date, or still open past it. It is judged by day — finished any time on the due date is on time. So for the same clients and month, the Late count on a Completed row is that priority’s overdue count on Work Orders.',
+  'On time % is out of the jobs whose outcome is known: finished, or open and overdue. A job that is open and not yet due is left out until then. Work Orders’ Target KPI Compliance counts those jobs as on time, so its percentage can read higher while work is in progress — the late counts are the same, the percentages are not.',
+  'Commenced rows judge the first labour entry against the tier’s response window from the requested date. Work Orders has no such measure, so a job can be in Late jobs here for starting late without being overdue there.',
   'KPIs 12–14 are not measured: AroFlo’s API does not link an invoice to its work order, or expose checklists and compliance forms. Upload a CSV export to measure them.',
   'PM SLA window of 30 days was never confirmed with the client.',
 ];
@@ -77,6 +82,19 @@ function fmtDate(d: Date | null): string {
   if (!d) return '';
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
+
+// The Late jobs table's columns, as its headings sort and filter them
+// (components/tableControls.tsx). Text is what the cell shows. Category has
+// its own picker above the table, so it only sorts here.
+const LATE_COLUMNS: ControlColumn<LateJob>[] = [
+  { key: 'job', label: 'Job', text: (j) => j.jobNumber },
+  { key: 'task', label: 'Task', text: (j) => j.task },
+  { key: 'tier', label: 'Tier', filter: 'choice', text: (j) => j.tier },
+  { key: 'requested', label: 'Requested', text: (j) => fmtDate(j.requested), sortValue: (j) => j.requested?.getTime() },
+  { key: 'completed', label: 'Completed', text: (j) => (j.completed ? fmtDate(j.completed) : 'still open'), sortValue: (j) => j.completed?.getTime() },
+  { key: 'days', label: 'Days late', filter: 'number', align: 'right', text: (j) => String(j.daysLate), sortValue: (j) => j.daysLate },
+  { key: 'category', label: 'Category', filter: 'none', text: (j) => j.category },
+];
 
 interface Props {
   palette: Palette;
@@ -211,6 +229,10 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
 
   const lateCats = useMemo(() => [...new Set(late.map((j) => j.category))].sort(), [late]);
   const shownLate = catFilter === '__all__' ? late : late.filter((j) => j.category === catFilter);
+  // Sorting and a filter per column, for looking through the list. The
+  // Category picker above it is the one that also decides what the Excel
+  // export lists; these don't.
+  const lateControls = useTableControls(shownLate, LATE_COLUMNS);
 
   async function onFile(file: File) {
     setParseError(null);
@@ -489,6 +511,10 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
             </div>
           )}
 
+          <div className="mb-4">
+            <LateRuleNote palette={palette} />
+          </div>
+
           <MatrixTable results={results} palette={palette} striped={striped} />
 
           {/* items-start: each chart is as tall as its own rows need. */}
@@ -502,33 +528,37 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
             <h3 className="text-[14px] font-semibold mb-2" style={{ color: palette.inkPrimary }}>
               Late jobs ({late.length})
             </h3>
-            <label className="text-[12px] mb-2 inline-flex items-center gap-2" style={{ color: palette.inkSecondary }}>
-              Category
-              <select
-                value={catFilter}
-                onChange={(e) => setCatFilter(e.target.value)}
-                className="px-2 py-1 rounded-md text-[12px]"
-                style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
-              >
-                <option value="__all__">All</option>
-                {lateCats.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2">
+              <label className="text-[12px] inline-flex items-center gap-2" style={{ color: palette.inkSecondary }}>
+                Category
+                <select
+                  value={catFilter}
+                  onChange={(e) => setCatFilter(e.target.value)}
+                  className="px-2 py-1 rounded-md text-[12px]"
+                  style={{ background: palette.surface, border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
+                >
+                  <option value="__all__">All</option>
+                  {lateCats.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {shownLate.length > 0 && <ControlSummary controls={lateControls} palette={palette} noun="late jobs" />}
+            </div>
             <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 460 }}>
               <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
                 <thead>
                   <tr>
-                    {['Job', 'Task', 'Tier', 'Requested', 'Completed', 'Days late', 'Category'].map((h) => (
+                    {LATE_COLUMNS.map((c) => (
                       <th
-                        key={h}
-                        className="text-left px-3 py-2 font-semibold sticky top-0 z-10"
+                        key={c.key}
+                        aria-sort={ariaSort(lateControls, c.key)}
+                        className={`px-3 py-2 font-semibold sticky top-0 z-10 align-bottom ${c.align === 'right' ? 'text-right' : 'text-left'}`}
                         style={{ color: palette.inkSecondary, background: palette.pagePlane }}
                       >
-                        {h}
+                        <ColumnHeading column={c} controls={lateControls} palette={palette} />
                       </th>
                     ))}
                   </tr>
@@ -541,13 +571,17 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
                       </td>
                     </tr>
                   )}
-                  {shownLate.map((j, i) => (
+                  <NoMatches controls={lateControls} palette={palette} span={LATE_COLUMNS.length} />
+                  {lateControls.rows.map((j, i) => (
                     <tr key={`${j.jobNumber}-${i}`} style={{ background: striped && i % 2 ? palette.pagePlane : 'transparent' }}>
                       <td className="px-3 py-1.5">{j.jobNumber}</td>
                       <td className="px-3 py-1.5">{j.task}</td>
                       <td className="px-3 py-1.5">{j.tier}</td>
                       <td className="px-3 py-1.5">{fmtDate(j.requested)}</td>
-                      <td className="px-3 py-1.5">{fmtDate(j.completed)}</td>
+                      {/* Late without a completion date: open past its due date. */}
+                      <td className="px-3 py-1.5" style={j.completed ? undefined : { color: palette.inkMuted }}>
+                        {j.completed ? fmtDate(j.completed) : 'still open'}
+                      </td>
                       <td className="px-3 py-1.5 text-right" style={{ color: palette.statusCritical, fontWeight: 700 }}>
                         {j.daysLate}
                       </td>
@@ -630,6 +664,9 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
               </li>
               {!isLive && (
                 <li>Completed-only exports make the “%” column read 100% by construction, not by performance.</li>
+              )}
+              {!isLive && (
+                <li>A job in the file that is still open past its Task Due Date counts as late on its Completed row.</li>
               )}
             </ul>
           </details>
