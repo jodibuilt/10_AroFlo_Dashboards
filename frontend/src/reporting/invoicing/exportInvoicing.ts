@@ -2,16 +2,13 @@ import ExcelJS from 'exceljs';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { InvoicingReportResponse } from '../types';
+import { formatDay, today } from '../time';
 
 function money(n: number | null): string {
   if (n === null || n === undefined) return '';
   return `$${Math.round(n).toLocaleString()}`;
 }
-function fmtDate(v: string | null): string {
-  if (!v) return '';
-  const d = new Date(v.replace(/\//g, '-'));
-  return isNaN(d.getTime()) ? v : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-}
+const fmtDate = (v: string | null): string => formatDay(v);
 
 interface Args {
   data: InvoicingReportResponse['data'];
@@ -34,7 +31,7 @@ export async function buildInvoicingExcel({ data, view, dateFrom, dateTo, paymen
   const sum = wb.addWorksheet('Summary');
   sum.addRow(['AroFlo Invoicing Report']);
   sum.addRow([`${dateFrom} to ${dateTo} · ${view}`]);
-  sum.addRow([`Generated ${new Date().toISOString().slice(0, 10)}`]);
+  sum.addRow([`Generated ${today()}`]);
   sum.addRow([paymentsNote]);
   sum.addRow([]);
   styleHeader(sum.addRow(['Metric', 'Value']));
@@ -43,6 +40,9 @@ export async function buildInvoicingExcel({ data, view, dateFrom, dateTo, paymen
     ['Submitted invoices', k.submittedCount],
     ['Submitted total (inc GST)', money(k.submittedTotalInc)],
     ['Submitted total (ex GST)', money(k.submittedTotalEx)],
+    // Part of the submitted figures above, not on top of them.
+    ['of which In Progress', k.inProgressCount ?? 0],
+    ['of which In Progress (inc GST)', money(k.inProgressTotalInc ?? 0)],
     ['Paid', k.paidCount],
     ['Paid value (inc GST)', money(k.paidTotalInc)],
     ['Unpaid', k.unpaidCount],
@@ -73,7 +73,7 @@ export async function buildInvoicingExcel({ data, view, dateFrom, dateTo, paymen
 
   const list = wb.addWorksheet('Invoice List');
   styleHeader(
-    list.addRow(['Invoice', 'Client', 'Bucket', 'Status', 'Date Invoiced', 'Due Date', 'Total (Inc GST)', 'Total (Ex GST)', 'Paid']),
+    list.addRow(['Invoice', 'Client', 'Client group', 'Status', 'Date Invoiced', 'Due Date', 'Total (Inc GST)', 'Total (Ex GST)', 'Paid']),
   );
   for (const r of data.invoiceList) {
     list.addRow([
@@ -86,7 +86,7 @@ export async function buildInvoicingExcel({ data, view, dateFrom, dateTo, paymen
   const buffer = await wb.xlsx.writeBuffer();
   return {
     blob: new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
-    filename: `aroflo_invoicing_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    filename: `aroflo_invoicing_${today()}.xlsx`,
   };
 }
 
@@ -102,7 +102,7 @@ export async function buildInvoicingPdf({ data, view, dateFrom, dateTo, payments
   doc.setTextColor(90);
   doc.text(`${dateFrom} to ${dateTo} · ${view}`, margin, y);
   y += 13;
-  doc.text(`Generated ${new Date().toISOString().slice(0, 10)}`, margin, y);
+  doc.text(`Generated ${today()}`, margin, y);
   y += 13;
   doc.text(doc.splitTextToSize(paymentsNote, 500 - margin), margin, y);
   y += 26;
@@ -119,6 +119,8 @@ export async function buildInvoicingPdf({ data, view, dateFrom, dateTo, payments
       ['Submitted invoices', String(k.submittedCount)],
       ['Submitted total (inc GST)', money(k.submittedTotalInc)],
       ['Submitted total (ex GST)', money(k.submittedTotalEx)],
+      ['of which In Progress', String(k.inProgressCount ?? 0)],
+      ['of which In Progress (inc GST)', money(k.inProgressTotalInc ?? 0)],
       ['Paid', String(k.paidCount)],
       ['Paid value (inc GST)', money(k.paidTotalInc)],
       ['Unpaid', String(k.unpaidCount)],
@@ -164,7 +166,7 @@ export async function buildInvoicingPdf({ data, view, dateFrom, dateTo, payments
   doc.text('Invoice List', margin, margin);
   autoTable(doc, {
     startY: margin + 10,
-    head: [['Invoice', 'Client', 'Bucket', 'Status', 'Date Inv.', 'Due', 'Total Inc', 'Total Ex', 'Paid']],
+    head: [['Invoice', 'Client', 'Client group', 'Status', 'Date Inv.', 'Due', 'Total Inc', 'Total Ex', 'Paid']],
     body: data.invoiceList.map((r) => [
       r.invoiceNumber, r.client, r.clientBucket, r.status, fmtDate(r.dateInvoiced), fmtDate(r.dueDate), money(r.totalInc), money(r.totalEx), r.paid,
     ]),
@@ -174,6 +176,6 @@ export async function buildInvoicingPdf({ data, view, dateFrom, dateTo, payments
 
   return {
     blob: doc.output('blob'),
-    filename: `aroflo_invoicing_${new Date().toISOString().slice(0, 10)}.pdf`,
+    filename: `aroflo_invoicing_${today()}.pdf`,
   };
 }

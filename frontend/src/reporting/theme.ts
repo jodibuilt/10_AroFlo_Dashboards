@@ -121,7 +121,17 @@ export function kpiTargetDefaultColors(p: Palette): Record<string, string> {
   return { 'Met Target': p.statusGood, 'Below Target': p.statusCritical, Target: p.inkPrimary };
 }
 
-export const PRIORITY_ORDER = ['P1', 'P2', 'P3', 'P4', 'P5', 'PM'];
+// The levels the reports are built on. Level 5 (AP5) is reported as part of
+// P4 (src/priorities.js), so it has no group of its own.
+export const PRIORITY_ORDER = ['P1', 'P2', 'P3', 'P4', 'PM'];
 export const BREAKDOWN_PRIORITIES = ['P1', 'P2', 'P3', 'P4'];
-export const PM_PRIORITIES = ['P5', 'PM'];
+export const PM_PRIORITIES = ['PM'];
+
+// How a level is headed on a page: its own code, unless the server says its
+// group holds more than one level here — { P4: 'P4/P5' } when there are AP5
+// jobs in the selection.
+export type LevelLabels = Record<string, string>;
+export function levelLabel(level: string, labels?: LevelLabels | null): string {
+  return labels?.[level] ?? level;
+}
 export const COMPLETED_STATUSES = new Set(['Completed', 'Archived']);

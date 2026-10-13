@@ -13,11 +13,14 @@ import {
   Tier,
 } from './config';
 import { buildDataset, buildDatasetFromRows, Diagnostics, KpiTaskRow } from './ingest';
-import { computeKpis, fmtPct, KpiResult, LateJob, lateJobs, reconcile } from './engine';
-import { buildKpiMatrixWorkbook } from './exportMatrix';
+import { computeKpis, KpiResult, LateJob, lateJobs, matrixCells, reconcile } from './engine';
+import { buildKpiMatrixPdf, buildKpiMatrixWorkbook, MatrixReportMeta } from './exportMatrix';
+import { ReportDownloads } from '../components/ReportDownloads';
 import { fetchLiveKpiRows, LIVE_CLIENT_COLUMN, LiveKpiRows } from '../../services/reportingKpiMatrix';
 import { LateRuleNote } from '../components/LateRuleNote';
-import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, NoMatches, useTableControls } from '../components/tableControls';
+import { clientGroupOf, clientGroupOptions } from '../components/ClientMultiSelect';
+import { formatInstant, today, zonedNow, zoneName } from '../time';
+import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, DownloadCsv, NoMatches, useTableControls } from '../components/tableControls';
 import { ClientMultiSelect } from '../components/ClientMultiSelect';
 import { formatCoverage } from '../../services/reportingRefresh';
 
@@ -28,18 +31,21 @@ const MAX_PERSIST = 3_000_000; // chars
 // The matrix reads live work orders from AroFlo unless a CSV export has been
 // uploaded, which then takes over until it is cleared. Three KPIs need data
 // AroFlo's API doesn't expose — a task's invoice date, checklists, compliance
-// forms — so live mode reports them as N/A instead of scoring every job a
-// failure for a date it was never given.
+// forms — so with live data those rows are left blank, with a note that only
+// an uploaded export fills them, instead of scoring every job a failure for
+// something it was never given (confirmed 2026-10-13).
 const LIVE_UNMEASURED: Set<Metric> = new Set(['invoice', 'jsa', 'issues']);
+const UPLOAD_ONLY_NOTE = 'Filled only when a CSV export is uploaded';
 
 function unmeasured(def: KpiDef): KpiResult {
   return {
     def,
+    uploadOnly: true,
     count: 0,
     total: 0,
     ontimeCount: null,
     ontimePool: null,
-    comment: 'Not available from AroFlo’s API — upload a CSV export to measure',
+    comment: UPLOAD_ONLY_NOTE,
     failCount: 0,
     ontimeFailCount: null,
     completionPct: null,
@@ -52,20 +58,18 @@ function unmeasured(def: KpiDef): KpiResult {
 }
 
 const LIVE_CAPTION =
-  'On-time % covers jobs started within their response window and finished by their due date. ' +
+  'On time % is out of the jobs whose outcome is known; the ones still in progress are counted on their own. ' +
   'A job still open past its due date counts as late. ' +
-  'Commenced uses the first labour entry logged on the job. Contributing factors are conditions ' +
+  'Commenced is read from each job’s status and substatus. Contributing factors are conditions ' +
   'present on the job, not confirmed causes of delay.';
 
 const LIVE_ASSUMPTIONS = [
-  'Tiers come from AroFlo’s own priority names: AP1–AP4 count with P1–P4, level 5 (AP5) sits in the P4 (30-day) tier, and SM counts as PM. A priority with no level in its name is left out of the tiered rows.',
-  'Commenced KPIs use the first labour entry logged on the job. A job with no labour logged is not scored for commencement.',
-  "Completion is judged against AroFlo's own Task Due Date, not the computed contractual SLA date. Those due dates are frequently defaulted / generous.",
-  'Late on a Completed row means what Overdue means on the Work Orders page: finished after the due date, or still open past it. It is judged by day — finished any time on the due date is on time. So for the same clients and month, the Late count on a Completed row is that priority’s overdue count on Work Orders.',
-  'On time % is out of the jobs whose outcome is known: finished, or open and overdue. A job that is open and not yet due is left out until then. Work Orders’ Target KPI Compliance counts those jobs as on time, so its percentage can read higher while work is in progress — the late counts are the same, the percentages are not.',
-  'Commenced rows judge the first labour entry against the tier’s response window from the requested date. Work Orders has no such measure, so a job can be in Late jobs here for starting late without being overdue there.',
-  'KPIs 12–14 are not measured: AroFlo’s API does not link an invoice to its work order, or expose checklists and compliance forms. Upload a CSV export to measure them.',
-  'PM SLA window of 30 days was never confirmed with the client.',
+  'Tiers come from AroFlo’s own priority names: AP1–AP4 count with P1–P4, and AP5 with P4 (the same 30-day window) — the P4 rows are headed P4/P5 when there are AP5 jobs in them. A priority with no level in its name is left out of the tiered rows.',
+  'Completed rows: a job is late if it was finished after the due date, or still open past it — the due date on the job in AroFlo is the deadline, judged by day (finished any time on the due date is on time). On time % is on time ÷ (on time + late). A job that is open and not yet due is In progress: counted in its own column, and in neither side of the percentage.',
+  'For the same clients and month, a Completed row’s On time %, Late and In progress are that priority’s figures under Target KPI Compliance on the Work Orders page.',
+  'Commenced rows go by the job’s status and substatus, which say where a job is now, not when it got there. A job counts as started if it is finished, In Progress, or its substatus is Materials Ordered, On Hold/Materials Required, Sent to Procurement, Non Access, Ready for Invoicing, To be Reviewed, Re-book or Job Cancelled. A job is late to start only if it has still not been started once its time limit has passed (P1 the same day if requested before 1 pm, otherwise the next day; P2 3 days; P3 14 days; P4/P5 and PM 30 days); a job not yet started inside its limit is In progress. Because nothing records when a job was started, one that has been started is not called late to start.',
+  'Late jobs lists a job once, with what it was late for: finishing (its due date), or only starting (its time limit to be started).',
+  'KPIs 12–14 are left blank: AroFlo’s API does not link an invoice to its work order, or expose checklists and compliance forms. They are filled only when a CSV export is uploaded.',
 ];
 
 function loadPersisted(): { csv: string; name: string } | null {
@@ -89,12 +93,16 @@ function fmtDate(d: Date | null): string {
 const LATE_COLUMNS: ControlColumn<LateJob>[] = [
   { key: 'job', label: 'Job', text: (j) => j.jobNumber },
   { key: 'task', label: 'Task', text: (j) => j.task },
-  { key: 'tier', label: 'Tier', filter: 'choice', text: (j) => j.tier },
+  // A late job whose priority has no level on the scale is in no tier.
+  { key: 'tier', label: 'Tier', filter: 'choice', text: (j) => j.tier || '—' },
   { key: 'requested', label: 'Requested', text: (j) => fmtDate(j.requested), sortValue: (j) => j.requested?.getTime() },
   { key: 'completed', label: 'Completed', text: (j) => (j.completed ? fmtDate(j.completed) : 'still open'), sortValue: (j) => j.completed?.getTime() },
   { key: 'days', label: 'Days late', filter: 'number', align: 'right', text: (j) => String(j.daysLate), sortValue: (j) => j.daysLate },
+  // Which deadline was missed: the due date, or only the time limit to start.
+  { key: 'lateFor', label: 'Late for', filter: 'choice', text: (j) => LATE_FOR[j.lateFor] },
   { key: 'category', label: 'Category', filter: 'none', text: (j) => j.category },
 ];
+const LATE_FOR: Record<LateJob['lateFor'], string> = { finishing: 'Finishing', starting: 'Starting' };
 
 interface Props {
   palette: Palette;
@@ -104,12 +112,21 @@ interface Props {
   dataVersion?: number;
   // The first day the loaded data covers (YYYY/MM/DD), if known.
   coverageFrom?: string | null;
-  // The clients to show until someone picks: the contract's (Ventia + SAHA),
-  // which is who this SLA template is for. Empty means everyone.
-  defaultClients?: string[];
+  // The contract's clients — { name in AroFlo: short label } — which is who
+  // this SLA template is for. The page opens on them together; each can be
+  // ticked alone, and every other company is one more group.
+  targetClients?: Record<string, string>;
 }
 
-export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersion = 0, coverageFrom = null, defaultClients = [] }) => {
+const NO_TARGET_CLIENTS: Record<string, string> = {};
+
+export const KpiMatrixSection: React.FC<Props> = ({
+  palette,
+  striped,
+  dataVersion = 0,
+  coverageFrom = null,
+  targetClients = NO_TARGET_CLIENTS,
+}) => {
   const persisted = useMemo(loadPersisted, []);
   const [csvText, setCsvText] = useState<string | null>(persisted?.csv ?? null);
   const [fileName, setFileName] = useState<string | null>(persisted?.name ?? null);
@@ -118,15 +135,16 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
   const [monthFilter, setMonthFilter] = useState<string>('__recent__');
   const [tierFilter, setTierFilter] = useState<Set<Tier>>(new Set(TIERS));
   const [catFilter, setCatFilter] = useState<string>('__all__');
-  const [busy, setBusy] = useState(false);
   const [loadedAt, setLoadedAt] = useState<Date | null>(persisted ? new Date() : null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [live, setLive] = useState<LiveKpiRows | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
-  // Clients to show, live mode only. Empty means everyone; null means nobody
-  // has picked yet, so the defaults apply.
+  // Client groups to show, live mode only: the same three as every other
+  // dashboard. Empty means everyone; null means nobody has picked yet, so it
+  // is the contract's clients together.
   const [pickedClients, setClientFilter] = useState<string[] | null>(null);
-  const clientFilter = pickedClients ?? defaultClients;
+  const clientOptions = useMemo(() => clientGroupOptions(targetClients), [targetClients]);
+  const clientFilter = pickedClients ?? Object.keys(targetClients);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const isLive = !csvText;
@@ -134,7 +152,10 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
   // Re-derived on every refresh so "overdue" / invoice-maturity checks use a
   // current clock, and every downstream useMemo recomputes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const now = useMemo(() => new Date(), [reloadNonce, dataVersion]);
+  // Now on the clock in Adelaide (../time): the dates in the rows are read
+  // as written, so "is it past its due date?" has to be asked the same way —
+  // not against the browser's own clock, which may be in another zone.
+  const now = useMemo(() => zonedNow(), [reloadNonce, dataVersion]);
 
   // AroFlo's work orders as the server holds them, whenever no CSV is
   // standing in for them. Fetched again when a refresh from AroFlo finishes.
@@ -155,25 +176,28 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
     };
   }, [isLive, dataVersion]);
 
-  const liveClients = useMemo(
-    () => (live ? [...new Set(live.rows.map((r) => r[LIVE_CLIENT_COLUMN]).filter(Boolean))].sort() : []),
-    [live],
-  );
-  // A client picked before a refresh may no longer be in the data. Keyed on
-  // the names, not the array: the defaults arrive as a new array each render.
+  // Keyed on the names, not the array: the default arrives as a new array
+  // each render.
   const clientKey = clientFilter.join('||');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const activeClients = useMemo(() => clientFilter.filter((c) => liveClients.includes(c)), [clientKey, liveClients]);
+  const activeClients = useMemo(
+    () => clientFilter.filter((c) => clientOptions.some((o) => o.value === c)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [clientKey, clientOptions],
+  );
+  // A row is in when its client's group is ticked — or nothing is.
+  const inPickedClients = useMemo(
+    () => (r: { [key: string]: string }) =>
+      activeClients.length === 0 || activeClients.includes(clientGroupOf(r[LIVE_CLIENT_COLUMN], targetClients)),
+    [activeClients, targetClients],
+  );
+  // What the pick is called, on the downloaded reports.
+  const clientsLabel = activeClients.length
+    ? activeClients.map((c) => clientOptions.find((o) => o.value === c)?.label ?? c).join(' + ')
+    : 'All clients';
 
   // The picked clients' work orders that arrived from AroFlo with the
   // priority field empty — listed at the bottom of the page.
-  const noPriorityRows = useMemo(
-    () =>
-      (live?.rows ?? []).filter(
-        (r) => !r.Priority && (activeClients.length === 0 || activeClients.includes(r[LIVE_CLIENT_COLUMN])),
-      ),
-    [live, activeClients],
-  );
+  const noPriorityRows = useMemo(() => (live?.rows ?? []).filter((r) => !r.Priority && inPickedClients(r)), [live, inPickedClients]);
 
   function resetFilters() {
     setMonthFilter('__recent__');
@@ -185,12 +209,13 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
     try {
       if (csvText) return buildDataset(csvText, now);
       if (!live) return null;
-      const rows = activeClients.length ? live.rows.filter((r) => activeClients.includes(r[LIVE_CLIENT_COLUMN])) : live.rows;
-      return buildDatasetFromRows(live.headers, rows, now);
+      // Live data: whether a job has been started is read from its status
+      // and substatus, not from a start date (see ingest's DatasetOptions).
+      return buildDatasetFromRows(live.headers, live.rows.filter(inPickedClients), now, { commenced: 'substatus' });
     } catch (e) {
       return { error: e instanceof Error ? e.message : 'Failed to parse CSV' } as { error: string };
     }
-  }, [csvText, live, activeClients, now]);
+  }, [csvText, live, inPickedClients, now]);
 
   const dataset = parsed && !('error' in parsed) ? parsed : null;
   const datasetError = parsed && 'error' in parsed ? parsed.error : null;
@@ -225,7 +250,22 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
     () => reconcile(filteredRows, isLive ? results.filter((r) => !LIVE_UNMEASURED.has(r.def.metric)) : results, now),
     [filteredRows, results, now, isLive],
   );
-  const late = useMemo(() => lateJobs(filteredRows, now), [filteredRows, now]);
+  // "P4/P5" where the P4 tier here holds level-5 (AP5) jobs. The tier is the
+  // same either way — this is only how it is headed, on the rows, the chart,
+  // the tier buttons, the late jobs and the downloaded reports.
+  const hasLevel5 = useMemo(
+    () => filteredRows.some((r) => r.tier === 'P4' && /^(?:A?P|Priority(?:\s+Level)?)\s*5(?!\d)/i.test(r.priority)),
+    [filteredRows],
+  );
+  const tierName = (tier: string) => (tier === 'P4' && hasLevel5 ? 'P4/P5' : tier);
+  const shownResults = useMemo(
+    () => results.map((r) => (r.def.tier === 'P4' && hasLevel5 ? { ...r, def: { ...r.def, name: r.def.name.replace(/^P4\b/, 'P4/P5') } } : r)),
+    [results, hasLevel5],
+  );
+  const late = useMemo(
+    () => lateJobs(filteredRows, now, { byDay: isLive }).map((j) => (j.tier === 'P4' && hasLevel5 ? { ...j, tier: 'P4/P5' } : j)),
+    [filteredRows, now, hasLevel5, isLive],
+  );
 
   const lateCats = useMemo(() => [...new Set(late.map((j) => j.category))].sort(), [late]);
   const shownLate = catFilter === '__all__' ? late : late.filter((j) => j.category === catFilter);
@@ -286,34 +326,30 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
     }
   }
 
-  async function exportExcel() {
-    setBusy(true);
-    try {
-      const { blob, filename } = await buildKpiMatrixWorkbook(results, shownLate, {
-        months: resolvedMonth === '__all__' ? 'all' : resolvedMonth,
-        generated: new Date().toISOString().slice(0, 10),
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-    } finally {
-      setBusy(false);
-    }
+  // What a downloaded matrix report says about itself: the month, whose work
+  // orders, and how the figures are worked out.
+  function reportMeta(): MatrixReportMeta {
+    return {
+      months: resolvedMonth === '__all__' ? 'all' : resolvedMonth,
+      generated: today(),
+      scope: isLive ? clientsLabel : `Uploaded file: ${fileName ?? 'CSV'}`,
+      notes: [
+        ...(isLive && coverageFrom ? [`Only work orders requested since ${formatCoverage(coverageFrom)} are loaded.`] : []),
+        'A work order belongs to the month it was requested in.',
+        ...(isLive ? LIVE_ASSUMPTIONS : ASSUMPTIONS),
+        `Dates and "today" are ${zoneName()} time.`,
+        ...(catFilter === '__all__' ? [] : [`Late jobs listed: category "${catFilter}" only.`]),
+      ],
+    };
   }
 
-  const h2 = 'text-[1.05rem] font-semibold pb-1 mb-1';
   const cardStyle: React.CSSProperties = { background: palette.surface, border: `1px solid ${palette.border}` };
   const outlineButton: React.CSSProperties = { border: `1px solid ${palette.border}`, color: palette.inkPrimary };
   const liveEmpty = isLive && live !== null && live.rows.length === 0;
 
   return (
     <div>
-      <h2 className={h2} style={{ borderBottom: `1px solid ${palette.border}`, color: palette.inkPrimary }}>
-        KPI Compliance Matrix
-      </h2>
+      {/* No heading of its own: the page is headed "KPI Matrix" already. */}
       <p className="text-[12px] mb-3" style={{ color: palette.inkMuted }}>
         {isLive ? LIVE_CAPTION : CAPTION}
       </p>
@@ -341,19 +377,12 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
                 {live.rows.length.toLocaleString()} work orders
               </span>
             )}
-            {liveClients.length > 1 && (
-              <div className="text-[12px] inline-flex items-center gap-2" style={{ color: palette.inkSecondary }}>
-                Client
-                <div style={{ width: 240 }}>
-                  <ClientMultiSelect
-                    palette={palette}
-                    options={liveClients.map((c) => ({ value: c, label: c }))}
-                    selected={activeClients}
-                    onChange={setClientFilter}
-                  />
-                </div>
+            <div className="text-[12px] inline-flex items-center gap-2" style={{ color: palette.inkSecondary }}>
+              Client
+              <div style={{ width: 240 }}>
+                <ClientMultiSelect palette={palette} options={clientOptions} selected={activeClients} onChange={setClientFilter} />
               </div>
-            )}
+            </div>
           </>
         )}
         <button
@@ -379,7 +408,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
             <span className="text-[12px]" style={{ color: palette.inkSecondary }}>
               {fileName}
               {loadedAt && (
-                <span style={{ color: palette.inkMuted }}> · loaded {loadedAt.toLocaleTimeString()}</span>
+                <span style={{ color: palette.inkMuted }}> · loaded {formatInstant(loadedAt.toISOString())}</span>
               )}
             </span>
             <button onClick={clearUpload} className="text-[12px] underline" style={{ color: palette.inkMuted }}>
@@ -472,20 +501,17 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
                         border: `1px solid ${palette.border}`,
                       }}
                     >
-                      {t}
+                      {tierName(t)}
                     </button>
                   );
                 })}
               </div>
             </div>
-            <button
-              onClick={exportExcel}
-              disabled={busy}
-              className="px-3 py-1.5 rounded-md text-[12px] font-semibold disabled:opacity-50"
-              style={{ border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
-            >
-              {busy ? 'Building…' : 'Export to Excel'}
-            </button>
+            <ReportDownloads
+              palette={palette}
+              excel={() => buildKpiMatrixWorkbook(shownResults, shownLate, reportMeta())}
+              pdf={() => buildKpiMatrixPdf(shownResults, shownLate, reportMeta())}
+            />
             <button
               onClick={() => setShowDiag((v) => !v)}
               className="px-3 py-1.5 rounded-md text-[12px] font-semibold"
@@ -515,11 +541,11 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
             <LateRuleNote palette={palette} />
           </div>
 
-          <MatrixTable results={results} palette={palette} striped={striped} />
+          <MatrixTable results={shownResults} palette={palette} striped={striped} />
 
           {/* items-start: each chart is as tall as its own rows need. */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 items-start">
-            <OnTimeChart results={results} palette={palette} />
+            <OnTimeChart results={shownResults} palette={palette} />
             <FactorsChart late={late} palette={palette} />
           </div>
 
@@ -546,6 +572,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
                 </select>
               </label>
               {shownLate.length > 0 && <ControlSummary controls={lateControls} palette={palette} noun="late jobs" />}
+              {shownLate.length > 0 && <DownloadCsv controls={lateControls} palette={palette} name="late jobs" />}
             </div>
             <div className="overflow-auto rounded-md" style={{ background: palette.surface, border: `1px solid ${palette.border}`, maxHeight: 460 }}>
               <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
@@ -566,7 +593,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
                 <tbody>
                   {shownLate.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-3 py-3" style={{ color: palette.inkMuted }}>
+                      <td colSpan={LATE_COLUMNS.length} className="px-3 py-3" style={{ color: palette.inkMuted }}>
                         No late jobs in this selection.
                       </td>
                     </tr>
@@ -576,7 +603,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
                     <tr key={`${j.jobNumber}-${i}`} style={{ background: striped && i % 2 ? palette.pagePlane : 'transparent' }}>
                       <td className="px-3 py-1.5">{j.jobNumber}</td>
                       <td className="px-3 py-1.5">{j.task}</td>
-                      <td className="px-3 py-1.5">{j.tier}</td>
+                      <td className="px-3 py-1.5">{j.tier || '—'}</td>
                       <td className="px-3 py-1.5">{fmtDate(j.requested)}</td>
                       {/* Late without a completion date: open past its due date. */}
                       <td className="px-3 py-1.5" style={j.completed ? undefined : { color: palette.inkMuted }}>
@@ -585,6 +612,7 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
                       <td className="px-3 py-1.5 text-right" style={{ color: palette.statusCritical, fontWeight: 700 }}>
                         {j.daysLate}
                       </td>
+                      <td className="px-3 py-1.5">{LATE_FOR[j.lateFor]}</td>
                       <td className="px-3 py-1.5">{j.category}</td>
                     </tr>
                   ))}
@@ -651,13 +679,17 @@ export const KpiMatrixSection: React.FC<Props> = ({ palette, striped, dataVersio
               )}
               {isLive && (
                 <li>
-                  Opens on the contract clients together; use the client filter for one of them, or All clients for
-                  everyone in AroFlo.
+                  Opens on the contract clients together. Tick either on its own, or Projects / Other for every other
+                  company taken together; with nothing ticked it is everyone.
                 </li>
               )}
               {(isLive ? LIVE_ASSUMPTIONS : ASSUMPTIONS).map((a) => (
                 <li key={a}>{a}</li>
               ))}
+              <li>
+                {zoneName()} time: whether a job is past its due date is judged against today in {zoneName()}, wherever
+                the page is opened from.
+              </li>
               <li>
                 Categories are conditions present on the job, not confirmed causes of delay. The proper fix is a
                 mandatory delay-reason field in AroFlo.
@@ -747,7 +779,7 @@ const MatrixTable: React.FC<{ results: ReturnType<typeof computeKpis>; palette: 
       <table className="w-full text-[12px]" style={{ color: palette.inkPrimary }}>
         <thead>
           <tr>
-            {['KPI', 'Name', 'Target %', '%', 'On time %', 'No.', 'Late', 'Comments'].map((h) => (
+            {['KPI', 'Name', 'Target %', '%', 'On time %', 'No.', 'Late', 'In progress', 'Comments'].map((h) => (
               <th
                 key={h}
                 className="text-left px-3 py-2 font-semibold sticky top-0 z-10"
@@ -761,20 +793,24 @@ const MatrixTable: React.FC<{ results: ReturnType<typeof computeKpis>; palette: 
         <tbody>
           {results.map((r, i) => {
             const isSla = r.def.metric === 'commenced' || r.def.metric === 'completed';
+            const cells = matrixCells(r);
             return (
-              <tr key={r.def.id} style={{ background: striped && i % 2 ? palette.pagePlane : 'transparent' }}>
+              <tr key={r.def.id} data-upload-only={r.uploadOnly ? '' : undefined} style={{ background: striped && i % 2 ? palette.pagePlane : 'transparent' }}>
                 <td className="px-3 py-1.5">{r.def.id}</td>
                 <td className="px-3 py-1.5">{r.def.name}</td>
                 <td className="px-3 py-1.5 text-right">{r.def.target}</td>
                 <td className="px-3 py-1.5 text-right" style={!isSla ? scoreStyle(r.measurable, r.met) : { color: palette.inkSecondary }}>
-                  {fmtPct(r.completionPct)}
+                  {cells.pct}
                 </td>
                 <td className="px-3 py-1.5 text-right" style={isSla ? scoreStyle(r.measurable, r.met) : undefined}>
-                  {isSla ? fmtPct(r.ontimePct) : ''}
+                  {cells.ontimePct}
                 </td>
-                <td className="px-3 py-1.5 text-right">{r.count}</td>
+                <td className="px-3 py-1.5 text-right">{cells.count}</td>
                 <td className="px-3 py-1.5 text-right" style={r.late > 0 ? { color: palette.statusCritical } : undefined}>
-                  {r.late}
+                  {cells.late}
+                </td>
+                <td className="px-3 py-1.5 text-right" style={{ color: palette.inkSecondary }}>
+                  {cells.inProgress}
                 </td>
                 <td className="px-3 py-1.5" style={{ color: palette.inkSecondary }}>
                   {r.comment}
@@ -800,7 +836,9 @@ const OnTimeChart: React.FC<{ results: ReturnType<typeof computeKpis>; palette: 
     .filter((r) => (r.def.metric === 'commenced' || r.def.metric === 'completed') && r.ontimePct !== null)
     .sort((a, b) => (a.ontimePct as number) - (b.ontimePct as number));
 
-  const labels = plot.map((r) => `${r.def.name} (${TIER_WINDOW_LABEL[r.def.tier as Tier]})`);
+  // "30 days (assumed)" reads as "PM Commenced (30 days (assumed))" on an
+  // axis; the assumption is stated once, in the list under the page.
+  const labels = plot.map((r) => `${r.def.name} (${TIER_WINDOW_LABEL[r.def.tier as Tier].replace(/\s*\(assumed\)/, '')})`);
   const values = plot.map((r) => r.ontimePct as number);
   const colours = plot.map((r) => colourFor(r.ontimePct, r.def.target, palette));
 

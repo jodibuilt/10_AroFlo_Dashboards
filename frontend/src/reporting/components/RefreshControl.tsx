@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Palette } from '../theme';
 import { AroFloStatus, fetchAroFloStatus, formatCoverage, startAroFloRefresh } from '../../services/reportingRefresh';
+import { formatInstant } from '../time';
 
 interface Props {
   palette: Palette;
@@ -16,10 +17,12 @@ const ZONE_NAMES: Record<string, string> = {
   invoices: 'Invoices',
   payments: 'Payments',
 };
+// The order the server loads them in (src/cache.js).
+const ZONE_ORDER = ['priorities', 'jobs', 'invoices', 'payments'];
 
-function when(iso: string): string {
-  return new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-}
+// In the reports' time zone (Adelaide), with the zone said — not in whatever
+// the browser is set to.
+const when = formatInstant;
 
 // The one place AroFlo data gets reloaded. The server never fetches on its
 // own — AroFlo's daily request allowance is shared with other tools — so
@@ -118,6 +121,24 @@ export const RefreshControl: React.FC<Props> = ({ palette, onRefreshed, onCovera
   else if (loaded) headline = `AroFlo data as of ${when(status.lastRefreshCompletedAt as string)}`;
   else headline = 'Nothing has been loaded from AroFlo since the server started. Press Refresh to load it.';
 
+  // How far the load has got, one step per thing AroFlo is asked for, in the
+  // order the server asks. A step is done once it has been fetched since
+  // this refresh began.
+  const startedAt = status?.refreshStartedAt ?? null;
+  const steps = ZONE_ORDER.map((key) => {
+    const z = status?.zones[key];
+    const done = Boolean(z?.lastFetchedAt && startedAt && z.lastFetchedAt >= startedAt);
+    return { key, name: ZONE_NAMES[key], count: z?.count ?? 0, done, loading: Boolean(z?.isRefreshing) };
+  });
+  const doneCount = steps.filter((s) => s.done).length;
+  const current = steps.find((s) => s.loading) ?? steps.find((s) => !s.done);
+  // Everything the reports need is in, with nothing failed or cut short.
+  const allLoaded = loaded && steps.every((s) => status?.zones[s.key]?.lastFetchedAt) && problems.length === 0 && warnings.length === 0;
+  const counts = steps
+    .filter((s) => s.key !== 'priorities')
+    .map((s) => `${s.count.toLocaleString()} ${s.name.toLowerCase()}`)
+    .join(' · ');
+
   // The button keeps its place at the right of the bar however long the text
   // beside it gets — the text wraps, the button doesn't drop under it. Only
   // on a phone-width screen does it go on its own line.
@@ -133,12 +154,47 @@ export const RefreshControl: React.FC<Props> = ({ palette, onRefreshed, onCovera
         <div className="text-[13px] font-semibold" style={{ color: palette.inkPrimary }} role="status" aria-live="polite">
           {headline}
         </div>
+        {/* While it loads: a bar, and which of the four things it is on. */}
+        {refreshing && (
+          <div className="mt-1.5 mb-1" data-load-progress>
+            <div
+              className="h-1.5 rounded-full overflow-hidden"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={steps.length}
+              aria-valuenow={doneCount}
+              aria-label="Loading from AroFlo"
+              style={{ background: palette.border, maxWidth: 360 }}
+            >
+              <div className="h-full transition-[width] duration-500" style={{ width: `${(doneCount / steps.length) * 100}%`, background: palette.accentBlue }} />
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5" style={{ color: palette.inkSecondary }}>
+              <span>
+                Loaded {doneCount} of {steps.length}
+                {current ? ` — now ${current.name.toLowerCase()}` : ''}
+              </span>
+              {steps.map((s) => (
+                <span key={s.key} style={{ color: s.done ? palette.statusGood : s.loading ? palette.inkPrimary : palette.inkMuted, fontWeight: s.loading ? 600 : 400 }}>
+                  {s.done ? '✓' : s.loading ? '…' : '○'} {s.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* Once it is in: say so, with how much, so nobody wonders whether
+            the page is still filling. */}
+        {!refreshing && loaded && (
+          <div data-load-summary style={{ color: allLoaded ? palette.statusGood : palette.statusWarningText, fontWeight: 600 }}>
+            {allLoaded ? `✓ All data loaded: ${counts}` : `Not everything loaded — see below. Have: ${counts}`}
+          </div>
+        )}
         <div style={{ color: palette.inkMuted }}>
           {/* What the reports can't see is as important as how fresh they
               are: nothing before this day is in any figure on the page. */}
           {coverageFrom &&
             `Covers ${reach} only: work orders requested, and invoices raised, since ${formatCoverage(coverageFrom)}. Anything older is not in these reports. `}
-          Data only reloads when someone presses Refresh.
+          Data only reloads when someone presses Refresh — and each refresh uses a daily AroFlo allowance shared with other
+          tools, so refresh when you need new figures, not repeatedly.
         </div>
         {problems.map((p) => (
           <div key={p} style={{ color: palette.statusCritical }}>

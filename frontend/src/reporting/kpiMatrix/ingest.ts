@@ -31,6 +31,41 @@ const CODE_TIERS: Record<string, [Tier, number]> = {
   PM: ['PM', 30],
 };
 
+// Where "has this job been started?" comes from.
+//   'schedule'  — an uploaded export: its Schedule Start date, judged
+//                 against the tier's time limit. (The original behaviour.)
+//   'substatus' — live AroFlo data: the job's status and substatus
+//                 (confirmed with the business, 2026-10-13). A substatus
+//                 says where a job is now, not when it got there, so this
+//                 can tell whether a job HAS been started but not when:
+//                 a started job counts as started in time, and a job is
+//                 late to start only if it still hasn't been once its time
+//                 limit has passed.
+export interface DatasetOptions {
+  commenced?: 'schedule' | 'substatus';
+}
+
+// The substatuses that mean work on the job has begun — someone has been to
+// it, or it is finished with. Re-book and Job Cancelled are closed jobs.
+// Anything else (Scheduled to Employee, Quoting, New WO to be Raised, or no
+// substatus) has not been started. Compared on letters and digits only.
+const STARTED_SUBSTATUSES = new Set(
+  [
+    'Materials Ordered',
+    'On Hold/Materials Required',
+    'Sent to Procurement',
+    'Non Access',
+    'Ready for Invoicing',
+    'Ready for Inv',
+    'To be Reviewed',
+    'Re-book',
+    'Job Cancelled',
+  ].map(lettersOnly),
+);
+function lettersOnly(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
 export interface KpiTaskRow {
   jobNumber: string;
   task: string;
@@ -161,6 +196,7 @@ export function buildDatasetFromRows(
   headers: string[],
   raw: CsvRow[],
   now: Date = new Date(),
+  options: DatasetOptions = {},
 ): { rows: KpiTaskRow[]; diag: Diagnostics } {
   const headerSet = new Set(headers);
   const hasDescription = headerSet.has(DESCRIPTION_COLUMN);
@@ -260,7 +296,7 @@ export function buildDatasetFromRows(
       taskEvaluable: false,
     };
 
-    addDerivedFlags(row, now);
+    addDerivedFlags(row, now, options);
     return row;
   });
 
@@ -290,12 +326,31 @@ function computeSlaDue(row: KpiTaskRow): Date | null {
   return endOfDay(addDays(req, row.slaDays));
 }
 
-function addDerivedFlags(row: KpiTaskRow, now: Date): void {
+function addDerivedFlags(row: KpiTaskRow, now: Date, options: DatasetOptions = {}): void {
+  const bySubstatus = options.commenced === 'substatus';
   row.slaDueAt = computeSlaDue(row);
 
+  // 5.4 has_commenced — never null. (Worked out first: with live data it is
+  // what 5.2 goes by.)
+  row.hasCommenced =
+    Boolean(row.completedAt) ||
+    COMMENCED_STATUSES.has(row.status.toLowerCase()) ||
+    COMMENCED_SUBSTATUSES.has(row.substatus.toLowerCase()) ||
+    (bySubstatus && STARTED_SUBSTATUSES.has(lettersOnly(row.substatus)));
+
   // 5.2 commenced_on_time
-  row.commencedOnTime =
-    row.actualStartAt && row.slaDueAt ? row.actualStartAt.getTime() <= row.slaDueAt.getTime() : null;
+  if (!bySubstatus) {
+    row.commencedOnTime =
+      row.actualStartAt && row.slaDueAt ? row.actualStartAt.getTime() <= row.slaDueAt.getTime() : null;
+  } else if (!row.slaDueAt) {
+    row.commencedOnTime = null;
+  } else if (row.hasCommenced) {
+    // Started — and nothing records when, so it is not called late.
+    row.commencedOnTime = true;
+  } else {
+    // Not started: late once its time limit has passed, undecided until then.
+    row.commencedOnTime = row.slaDueAt.getTime() < now.getTime() ? false : null;
+  }
 
   // 5.3 completed_on_time — against AroFlo's own Task Due Date. A job still
   // open after that date has missed it whenever it ends up finished, so it
@@ -305,12 +360,6 @@ function addDerivedFlags(row: KpiTaskRow, now: Date): void {
   if (!row.taskDueAt) row.completedOnTime = null;
   else if (row.completedAt) row.completedOnTime = row.completedAt.getTime() <= row.taskDueAt.getTime();
   else row.completedOnTime = row.taskDueAt.getTime() < now.getTime() ? false : null;
-
-  // 5.4 has_commenced — never null
-  row.hasCommenced =
-    Boolean(row.completedAt) ||
-    COMMENCED_STATUSES.has(row.status.toLowerCase()) ||
-    COMMENCED_SUBSTATUSES.has(row.substatus.toLowerCase());
 
   // 5.5 invoice_on_time
   if (!row.completedAt) {
@@ -330,9 +379,11 @@ function addDerivedFlags(row: KpiTaskRow, now: Date): void {
     row.isOverdue = row.completedAt.getTime() > row.slaDueAt.getTime();
   }
 
-  // 5.7 task_is_late — started late, finished late, or open past its due date
-  row.taskIsLate = (Boolean(row.actualStartAt) && row.commencedOnTime === false) || row.completedOnTime === false;
+  // 5.7 task_is_late — late to start, finished late, or open past its due date
+  row.taskIsLate =
+    (row.commencedOnTime === false && (bySubstatus || Boolean(row.actualStartAt))) || row.completedOnTime === false;
 
-  // 5.8 task_evaluable — all four dates required
-  row.taskEvaluable = Boolean(row.actualStartAt && row.completedAt && row.slaDueAt && row.taskDueAt);
+  // 5.8 task_evaluable — every date its rows are judged by. With live data
+  // there is no start date to need.
+  row.taskEvaluable = Boolean((bySubstatus || row.actualStartAt) && row.completedAt && row.slaDueAt && row.taskDueAt);
 }

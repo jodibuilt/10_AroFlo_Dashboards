@@ -117,6 +117,14 @@ function DashboardsApp({ user, onLogout, themeMode, onThemeChange }: DashboardsA
     setMobileNavOpen(false);
   }, [currentTab]);
 
+  // A different page starts at its top. The window kept its scroll position
+  // across pages, so going from the foot of one report to another landed
+  // part-way down it — past the Refresh bar, the filters and the downloads,
+  // with nothing to say there was anything above.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [currentTab]);
+
   return (
     <div className="min-h-screen bg-canvas text-ink font-sans flex antialiased">
       <a href="#main-content" className="skip-link">
@@ -191,9 +199,33 @@ export default function App() {
   // Up here rather than in DashboardsApp so the login screen is themed too.
   const theme = useThemeMode();
 
+  // Set when someone who was signed in turns out not to be any more, so the
+  // sign-in screen can say why it has reappeared.
+  const [sessionEnded, setSessionEnded] = useState(false);
+
   useEffect(() => {
     fetchCurrentUser().then(setUser);
   }, []);
+
+  // A session can end while the page sits open — it expired, or an admin
+  // reset the password. Coming back to the tab is when that gets noticed:
+  // without this the reports just start answering "Not signed in".
+  const signedIn = user !== null && user !== 'loading';
+  useEffect(() => {
+    if (!signedIn) return;
+    const recheck = () => {
+      if (document.visibilityState !== 'visible') return;
+      fetchCurrentUser()
+        .then((current) => {
+          if (current) return;
+          setSessionEnded(true);
+          setUser(null);
+        })
+        .catch(() => {}); // the server not answering is not the same as being signed out
+    };
+    document.addEventListener('visibilitychange', recheck);
+    return () => document.removeEventListener('visibilitychange', recheck);
+  }, [signedIn]);
 
   const handleLogout = async () => {
     try {
@@ -201,6 +233,7 @@ export default function App() {
     } catch (err) {
       if (!(err instanceof AuthError)) throw err;
     }
+    setSessionEnded(false);
     setUser(null);
   };
 
@@ -209,7 +242,15 @@ export default function App() {
   }
 
   if (user === null) {
-    return <LoginView onSignedIn={setUser} />;
+    return (
+      <LoginView
+        onSignedIn={(next) => {
+          setSessionEnded(false);
+          setUser(next);
+        }}
+        notice={sessionEnded ? 'Your session has ended. Sign in again to carry on where you were.' : null}
+      />
+    );
   }
 
   return <DashboardsApp user={user} onLogout={handleLogout} themeMode={theme.mode} onThemeChange={theme.setMode} />;

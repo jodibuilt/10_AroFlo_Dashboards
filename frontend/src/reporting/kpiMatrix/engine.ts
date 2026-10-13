@@ -38,6 +38,9 @@ export interface KpiResult {
   late: number;
   measurable: boolean;
   met: boolean;
+  // A row AroFlo's own data cannot fill: it is left blank, and only an
+  // uploaded CSV export fills it (KPIs 12–14 with live data).
+  uploadOnly?: boolean;
 }
 
 const MS_DAY = 86_400_000;
@@ -66,12 +69,15 @@ function masksFor(tier: Tier | null, metric: Metric, now: Date): Masks {
   if (metric === 'commenced' || metric === 'completed') {
     const inTier = (r: KpiTaskRow) => r.tier === tier;
     if (metric === 'commenced') {
+      // The pool is every job whose start is decided either way (ingest
+      // 5.2): started in time or late — or, with live data, still not
+      // started after its time limit.
       return {
         count: (r) => inTier(r) && r.hasCommenced,
         total: inTier,
         ontimeCount: (r) => inTier(r) && isTrue(r.commencedOnTime),
-        ontimePool: (r) => inTier(r) && Boolean(r.actualStartAt) && Boolean(r.slaDueAt),
-        fail: (r) => inTier(r) && isFalse(r.commencedOnTime) && Boolean(r.actualStartAt),
+        ontimePool: (r) => inTier(r) && r.commencedOnTime !== null,
+        fail: (r) => inTier(r) && isFalse(r.commencedOnTime),
       };
     }
     // The pool is every job whose outcome is known: finished (on time or
@@ -223,6 +229,28 @@ export function fmtPct(v: number | null): string {
   return v === null ? 'N/A' : `${Math.round(v)}%`;
 }
 
+// Jobs in a Commenced or Completed row that are neither on time nor late
+// yet: still inside their time limit. They are a figure of their own and in
+// neither side of On time %. Null for the rows that have no such idea.
+export function inProgressCount(r: KpiResult): number | null {
+  return r.ontimePool === null ? null : r.total - r.ontimePool;
+}
+
+// What a row shows in each of its figure columns. A row only an uploaded
+// export can fill is blank throughout rather than reading 0 or N/A.
+export function matrixCells(r: KpiResult): { pct: string; ontimePct: string; count: string; late: string; inProgress: string } {
+  if (r.uploadOnly) return { pct: '', ontimePct: '', count: '', late: '', inProgress: '' };
+  const isSla = r.def.metric === 'commenced' || r.def.metric === 'completed';
+  const inProgress = inProgressCount(r);
+  return {
+    pct: fmtPct(r.completionPct),
+    ontimePct: isSla ? fmtPct(r.ontimePct) : '',
+    count: String(r.count),
+    late: String(r.late),
+    inProgress: inProgress === null ? '' : String(inProgress),
+  };
+}
+
 export interface LateJob {
   jobNumber: string;
   task: string;
@@ -231,15 +259,44 @@ export interface LateJob {
   completed: Date | null;
   daysLate: number;
   category: string;
+  // Which deadline it missed: its due date ('finishing'), or only its time
+  // limit to be started ('starting').
+  lateFor: 'finishing' | 'starting';
 }
 
-export function lateJobs(rows: KpiTaskRow[], now: Date = new Date()): LateJob[] {
+export interface LateJobOptions {
+  // Live data: deadlines are by the day and nothing records when a job was
+  // started. Days late are then whole calendar days — the Days Late of the
+  // Work Orders page — and a job late to be started is measured up to now.
+  byDay?: boolean;
+}
+
+// The calendar day a date falls on, as a count of days: the difference of
+// two is the days between them, whatever the times of day or daylight saving.
+function dayNumber(d: Date): number {
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / MS_DAY;
+}
+
+export function lateJobs(rows: KpiTaskRow[], now: Date = new Date(), options: LateJobOptions = {}): LateJob[] {
   return rows
     .filter((r) => r.taskIsLate)
     .map((r) => {
-      const end = r.completedAt ?? now;
-      const due = r.taskDueAt ?? r.slaDueAt;
-      const daysLate = due ? Math.round(((end.getTime() - due.getTime()) / MS_DAY) * 10) / 10 : 0;
+      // Days late are counted from the deadline that was missed. A job late
+      // to finish is measured from its due date; one that was only late to
+      // be started, from its time limit for starting — measuring that
+      // against a due date still ahead would give days late below zero.
+      const finishing = r.completedOnTime === false;
+      const end = finishing ? r.completedAt ?? now : options.byDay ? now : r.actualStartAt ?? now;
+      const due = finishing ? r.taskDueAt : r.slaDueAt;
+      // A job that is late is never shown as 0 days late: finished twenty
+      // minutes after its due day ended is a day late by the day, and a
+      // tenth of one by the clock.
+      let daysLate = 0;
+      if (due) {
+        daysLate = options.byDay
+          ? Math.max(1, dayNumber(end) - dayNumber(due))
+          : Math.max(0.1, Math.round(((end.getTime() - due.getTime()) / MS_DAY) * 10) / 10);
+      }
       return {
         jobNumber: r.jobNumber,
         task: r.task,
@@ -248,6 +305,7 @@ export function lateJobs(rows: KpiTaskRow[], now: Date = new Date()): LateJob[] 
         completed: r.completedAt,
         daysLate,
         category: r.failureCategory,
+        lateFor: finishing ? ('finishing' as const) : ('starting' as const),
       };
     })
     .sort((a, b) => b.daysLate - a.daysLate);

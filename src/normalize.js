@@ -1,6 +1,7 @@
 const { parseAroFloDateTime } = require('./aroflo/aroFloDates');
 const config = require('./config');
 const { resolvePriority } = require('./priorities');
+const { zonedNow } = require('./time');
 
 function safeParseDate(value) {
   if (!value || !String(value).trim()) return null;
@@ -11,15 +12,17 @@ function safeParseDate(value) {
   }
 }
 
+// "Today" here and below is the day in the reports' time zone (src/time.js),
+// whatever this machine's clock is set to.
 function isPastDate(dateStr) {
   const d = safeParseDate(dateStr);
   if (!d) return false;
-  const today = new Date();
+  const today = zonedNow();
   today.setHours(0, 0, 0, 0);
   return d.getTime() < today.getTime();
 }
 
-function daysBetween(date, reference = new Date()) {
+function daysBetween(date, reference = zonedNow()) {
   if (!date) return null;
   const msPerDay = 24 * 60 * 60 * 1000;
   const a = new Date(date);
@@ -103,9 +106,12 @@ function normalizeTask(raw, priorities = new Map()) {
     // module's logic was ported from.
     priorityId,
     // priorityLabel is what AroFlo calls the priority ("AP1"); priorityCode
-    // is its level on the P1-P5 / PM scale ("P1"), or null if it has none.
+    // is the level it is reported under ("P1"), or null if it has none; and
+    // priorityLevel is the level its own name states, which differs only
+    // for AP5: level "P5", reported as "P4".
     priorityLabel: priority.label,
     priorityCode: priority.code,
+    priorityLevel: priority.level,
     requestDate: cleanStr(raw.requestdate) || null,
     actualStartDate: earliestLabourStart(raw),
     completedDate: cleanStr(raw.completeddate) || null,

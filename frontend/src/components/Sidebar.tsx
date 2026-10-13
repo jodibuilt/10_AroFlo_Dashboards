@@ -271,13 +271,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
           <button
             onClick={onLogout}
-            aria-label="Log out"
+            aria-label="Sign out"
             className={`w-full mt-2 text-chrome-text hover:bg-chrome-line hover:text-white text-[12px] font-semibold py-2.5 rounded-md transition-colors flex items-center justify-center gap-2 ${
               collapsed ? 'px-0' : 'px-4'
             }`}
           >
             <span className="material-symbols-outlined text-[16px]" aria-hidden="true">logout</span>
-            {!collapsed && <span>Logout</span>}
+            {!collapsed && <span>Sign out</span>}
           </button>
         </div>
       </aside>

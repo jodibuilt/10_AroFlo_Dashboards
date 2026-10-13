@@ -29,8 +29,19 @@
       const tr = document.createElement('tr');
       tr.appendChild(el('td', { text: u.username }));
       tr.appendChild(el('td', { text: u.display_name }));
-      tr.appendChild(el('td', { text: u.role }));
-      tr.appendChild(el('td', { text: new Date(u.created_at).toLocaleDateString() }));
+      // "Admin" / "User", and the date written the way the report pages
+      // write dates — in Adelaide time, like everything else here.
+      tr.appendChild(el('td', { text: u.role === 'admin' ? 'Admin' : 'User' }));
+      tr.appendChild(
+        el('td', {
+          text: new Date(u.created_at).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            timeZone: 'Australia/Adelaide',
+          }),
+        }),
+      );
 
       const actionsTd = document.createElement('td');
       const resetBtn = el('button', { text: 'Reset password', className: 'btn btn-secondary' });

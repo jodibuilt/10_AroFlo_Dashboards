@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Palette } from '../theme';
 import { EditScope, loadDashboardEdit, saveDashboardEdit, deleteDashboardEdit } from '../../services/reportingEdits';
-import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, FilterKind, NoMatches, useTableControls } from './tableControls';
+import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, DownloadCsv, FilterKind, NoMatches, useTableControls } from './tableControls';
 
 export interface EditableColumn {
   key: string;
@@ -35,6 +35,9 @@ interface EditableTableProps {
   // long tables; a five-row summary doesn't need it.
   filterable?: boolean;
   quickFilters?: QuickFilter[];
+  // With `filterable`: gives the table a Download CSV button; this goes in
+  // the file name.
+  downloadName?: string;
 }
 
 const ROWS_PER_PAGE = 20;
@@ -79,6 +82,7 @@ export const EditableTable: React.FC<EditableTableProps> = ({
   emptyMessage,
   filterable = false,
   quickFilters = [],
+  downloadName,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [edit, setEdit] = useState<SavedEdit | null>(null);
@@ -193,6 +197,7 @@ export const EditableTable: React.FC<EditableTableProps> = ({
                 </button>
               );
             })}
+          {controlled && rows.length > 0 && downloadName && <DownloadCsv controls={controls} palette={palette} name={downloadName} />}
           {edit && (
             <span className="text-[11px]" style={{ color: palette.statusWarningText }}>
               Showing your edited version of this table, not the latest AroFlo data.{' '}
@@ -230,8 +235,9 @@ export const EditableTable: React.FC<EditableTableProps> = ({
                   <th
                     key={c.key}
                     aria-sort={controlled ? ariaSort(controls, c.key) : undefined}
-                    className={`p-2 font-semibold uppercase text-[11px] sticky top-0 z-10 align-bottom ${c.align === 'right' ? 'text-right' : 'text-left'}`}
-                    style={{ color: palette.inkMuted, background: palette.surface, boxShadow: `inset 0 -1px 0 ${palette.border}` }}
+                    // Headed like every other table on the report pages.
+                    className={`px-3 py-2 font-semibold text-[12px] sticky top-0 z-10 align-bottom ${c.align === 'right' ? 'text-right' : 'text-left'}`}
+                    style={{ color: palette.inkSecondary, background: palette.pagePlane, boxShadow: `inset 0 -1px 0 ${palette.border}` }}
                   >
                     {controlled ? <ColumnHeading column={controlColumns[i]} controls={controls} palette={palette} /> : c.label}
                   </th>

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Plot, baseLayout, headroom, PLOT_CONFIG } from '../plotly';
-import { Palette, PRIORITY_ORDER } from '../theme';
+import { Palette, PRIORITY_ORDER, LevelLabels, levelLabel } from '../theme';
 import { ReportTask, ColorOverrides } from '../types';
 import { EditScope } from '../../services/reportingEdits';
 import { ChartCard } from '../components/ChartCard';
@@ -11,13 +11,15 @@ interface PriorityChartProps {
   palette: Palette;
   stateKey: string;
   scope: EditScope;
+  // What to print under a bar instead of its level's code ("P4/P5").
+  labels?: LevelLabels | null;
 }
 
 // Ported from aroflo_dash's render_priority_chart — "Work Orders by
 // Priority", fixed P1..PM order, zero-filled. Only tasks whose priority
 // successfully mapped to a P-code count here (unmapped ones are already
 // excluded server-side — see views.js buildReportingKpis).
-export const PriorityChart: React.FC<PriorityChartProps> = ({ tasks, palette, stateKey, scope }) => {
+export const PriorityChart: React.FC<PriorityChartProps> = ({ tasks, palette, stateKey, scope, labels }) => {
   const defaultColors = palette.priorityColors;
   const [colors, setColors] = useState<ColorOverrides>(defaultColors);
 
@@ -56,6 +58,12 @@ export const PriorityChart: React.FC<PriorityChartProps> = ({ tasks, palette, st
         ]}
         layout={{
           ...baseLayout(palette, { title: 'Work Orders by Priority' }),
+          xaxis: {
+            ...baseLayout(palette, { title: '' }).xaxis,
+            tickmode: 'array',
+            tickvals: PRIORITY_ORDER,
+            ticktext: PRIORITY_ORDER.map((p) => levelLabel(p, labels)),
+          },
           yaxis: { ...baseLayout(palette, { title: '' }).yaxis, range: [0, headroom(max)] },
         }}
         config={PLOT_CONFIG}

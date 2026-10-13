@@ -5,14 +5,16 @@ const { normalizeTask, normalizeInvoice, normalizePayment } = require('./normali
 const { normalizePriority } = require('./priorities');
 const { fetchPayments } = require('./payments');
 const { formatAroFloDate } = require('./aroflo/aroFloDates');
+const { zonedNow } = require('./time');
 
 // The first day the reports cover: the 1st of the month, `lookbackMonths`
-// before this one. Every dated zone below is asked for from this day on.
+// before this one — the month it is in Adelaide (src/time.js), not on this
+// machine. Every dated zone below is asked for from this day on.
 // It has to be asked — AroFlo answers a request with no date filter with
 // just the last 30 days (Tasks: "datetimerequested > 30 days ago") and says
 // nothing about having done so. That is how a report built on "every work
 // order" ends up missing any job requested more than a month ago.
-function coverageStart(now = new Date()) {
+function coverageStart(now = zonedNow()) {
   return new Date(now.getFullYear(), now.getMonth() - config.lookbackMonths, 1);
 }
 
@@ -85,6 +87,7 @@ class DashboardCache {
       this.state[zoneDef.key] = { records: [], lastFetchedAt: null, error: null, warning: null, isRefreshing: false };
     }
     this.lastRefreshCompletedAt = null;
+    this.refreshStartedAt = null;
     // The first day covered by what is loaded, as AroFlo writes dates
     // (YYYY/MM/DD). Null until the first refresh.
     this.coverageFrom = null;
@@ -207,6 +210,9 @@ class DashboardCache {
       return;
     }
     this.isRefreshingAll = true;
+    // When this refresh began: a zone fetched since then has been loaded by
+    // it, which is how the page shows how far a refresh has got.
+    this.refreshStartedAt = new Date().toISOString();
     const requestsBefore = this.client.requestCount;
     const coverageFrom = formatAroFloDate(coverageStart());
     try {
@@ -254,6 +260,7 @@ class DashboardCache {
     }
     return {
       zones,
+      refreshStartedAt: this.refreshStartedAt,
       lastRefreshCompletedAt: this.lastRefreshCompletedAt,
       coverageFrom: this.coverageFrom,
       lookbackMonths: config.lookbackMonths,

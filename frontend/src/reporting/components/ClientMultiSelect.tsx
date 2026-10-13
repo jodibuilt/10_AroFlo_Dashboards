@@ -20,6 +20,26 @@ export function decodeClients(view: string, allKey: string): string[] {
   return view === allKey ? [] : view.split(SEPARATOR).filter(Boolean);
 }
 
+// The client groups every dashboard offers: each contract client on its own
+// (Ventia, SAHA — KPI_TARGET_CLIENTS_JSON), and every other company taken
+// together. The server knows the last one by this same word (src/views.js).
+export const OTHER_CLIENTS = 'others';
+export const OTHER_CLIENTS_LABEL = 'Projects / Other';
+
+// `targetClients` is { name in AroFlo: short label }.
+export function clientGroupOptions(targetClients: Record<string, string>): ClientOption[] {
+  return [
+    ...Object.entries(targetClients).map(([name, label]) => ({ value: name, label })),
+    { value: OTHER_CLIENTS, label: OTHER_CLIENTS_LABEL },
+  ];
+}
+
+// Which group a client's work belongs to: its own name if it is a contract
+// client, otherwise OTHER_CLIENTS.
+export function clientGroupOf(client: string, targetClients: Record<string, string>): string {
+  return client in targetClients ? client : OTHER_CLIENTS;
+}
+
 interface Props {
   palette: Palette;
   options: ClientOption[];

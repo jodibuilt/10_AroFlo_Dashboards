@@ -10,6 +10,7 @@ const { day } = require('./helpers');
 const AroFloClient = require('../src/aroflo/AroFloClient');
 const { DashboardCache } = require('../src/cache');
 const config = require('../src/config');
+const { zonedNow } = require('../src/time');
 
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
 
@@ -60,7 +61,8 @@ test('a refresh only reads, and asks each dated zone for the whole period the re
     assert.deepEqual(aroflo.requests.map((r) => r.zone), ['Priorities', 'Tasks', 'Invoices', 'Payments']);
 
     // Without these AroFlo returns just the last 30 days and says nothing.
-    const now = new Date();
+    // The month it is in Adelaide, not on this machine.
+    const now = zonedNow();
     const first = new Date(now.getFullYear(), now.getMonth() - config.lookbackMonths, 1);
     const iso = `${first.getFullYear()}-${String(first.getMonth() + 1).padStart(2, '0')}-01`;
     const where = Object.fromEntries(aroflo.requests.map((r) => [r.zone, r.where]));

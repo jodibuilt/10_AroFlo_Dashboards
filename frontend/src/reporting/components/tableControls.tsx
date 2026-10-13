@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Palette } from '../theme';
+import { csvBlob, saveBlob, slug } from '../export/download';
+import { today } from '../time';
 
 // Filtering and sorting for the long report tables, the same on every one:
 // each column heading sorts when clicked and has its own filter under it.
@@ -218,6 +220,31 @@ export function ControlSummary<R>({ controls, palette, noun = 'rows' }: { contro
         </>
       )}
     </span>
+  );
+}
+
+// Saves the table as a CSV file — the rows as they are showing, so with the
+// filters and the sort that are on (and, in an edited table, the edits).
+// `name` goes in the file name with today's date.
+export function DownloadCsv<R>({ controls, palette, name }: { controls: TableControls<R>; palette: Palette; name: string }) {
+  const save = () => {
+    const blob = csvBlob(
+      controls.columns.map((c) => c.label),
+      controls.rows.map((row) => controls.columns.map((c) => c.text(row))),
+    );
+    saveBlob(blob, `aroflo_${slug(name)}_${today()}.csv`);
+  };
+  return (
+    <button
+      type="button"
+      onClick={save}
+      disabled={controls.rows.length === 0}
+      title={controls.filtered ? 'Save the rows showing now (filters applied) as a CSV file' : 'Save this table as a CSV file'}
+      className="px-2 py-0.5 rounded-md text-[11px] font-semibold disabled:opacity-50"
+      style={{ border: `1px solid ${palette.border}`, color: palette.inkPrimary, background: 'transparent' }}
+    >
+      Download CSV
+    </button>
   );
 }
 

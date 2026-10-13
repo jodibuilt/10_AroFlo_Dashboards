@@ -66,8 +66,22 @@ const EDITED = new Set([
   'frontend/src/reporting/components/LateRuleNote.tsx',
   'frontend/src/reporting/components/tableControls.tsx',
   'frontend/src/reporting/components/DatePresets.tsx',
+  'frontend/src/reporting/components/ReportDownloads.tsx',
+  'frontend/src/reporting/export/download.ts',
+  // Adelaide time, not the browser's: "today", the times shown, and the
+  // date the exports are stamped with (they used the UTC date).
+  'frontend/src/reporting/time.ts',
+  'frontend/src/reporting/export/buildExcelReport.ts',
+  'frontend/src/reporting/export/buildPdfReport.ts',
+  'frontend/src/reporting/invoicing/exportInvoicing.ts',
+  'frontend/src/reporting/kpiMatrix/exportMatrix.ts',
   'frontend/src/reporting/components/EditableTable.tsx',
   'frontend/src/reporting/charts/TrendChart.tsx',
+  // AP5 is reported as part of P4: no P5 group, and a bar is headed
+  // "P4/P5" when its group holds AP5 jobs.
+  'frontend/src/reporting/theme.ts',
+  'frontend/src/reporting/charts/ComplianceChart.tsx',
+  'frontend/src/reporting/charts/PriorityChart.tsx',
 ]);
 
 function walk(rel) {

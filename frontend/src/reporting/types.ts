@@ -16,26 +16,39 @@ export interface KpiSummary {
   outstanding: number;
   overdue: number;
   completionRate: number;
+  // Overdue ÷ completed. Passes 100% while few of the period's jobs are done.
   overdueRate: number;
+  // Overdue ÷ issued.
+  overdueRateOfIssued?: number;
   // Every loaded work order for the clients that isn't finished, whatever
   // period it was requested in — "outstanding in the system".
   openInSystem?: number;
 }
 
+// One priority level's compliance. Its work orders are of three kinds —
+// on time, late, and still in progress (open and not yet due) — and the
+// percentage is on time ÷ (on time + late). With nothing decided yet there
+// is no percentage: the level is all in progress.
 export interface ComplianceRow {
   priority: string;
   total: number;
-  actualPercent: number;
+  onTime?: number;
+  late?: number;
+  inProgress?: number;
+  actualPercent: number | null;
   targetPercent: number;
-  variancePp: number;
-  status: 'Met' | 'Below Target';
+  variancePp: number | null;
+  status: 'Met' | 'Below Target' | 'In progress';
 }
 
 export interface BreakdownRow {
   taskId: string;
   jobNumber: string;
   client: string;
+  // The level the row is grouped under ("P4") …
   priority: string;
+  // … and the priority as AroFlo names it ("AP5").
+  priorityName?: string;
   requestDate: string | null;
   actualStartDate: string | null;
   requiredCompletedDate: string | null;
@@ -51,7 +64,13 @@ export interface ReportingKpisResponse {
   breakdown: BreakdownRow[];
   pmBreakdown: BreakdownRow[];
   tasks: ReportTask[];
-  meta: { lastFetchedAt: string | null; error: string | null; priorityCodeMapConfigured: boolean };
+  meta: {
+    lastFetchedAt: string | null;
+    error: string | null;
+    priorityCodeMapConfigured: boolean;
+    // { P4: 'P4/P5' } when the P4 group holds level-5 (AP5) jobs.
+    levelLabels?: Record<string, string>;
+  };
 }
 
 export interface ReportingConfig {
@@ -60,6 +79,8 @@ export interface ReportingConfig {
   targetClients: Record<string, string>;
   reportTitle: string;
   reportSubtitle: string;
+  // The zone "today" and the times on the pages are in (./time).
+  timeZone?: string;
 }
 
 export type ColorOverrides = Record<string, string>;
@@ -95,6 +116,10 @@ export interface InvoiceKpis {
   submittedCount: number;
   submittedTotalInc: number;
   submittedTotalEx: number;
+  // The part of submitted whose status is In Progress: gone to the client,
+  // and said to be in progress wherever submitted is shown.
+  inProgressCount?: number;
+  inProgressTotalInc?: number;
   paidCount: number;
   paidTotalInc: number;
   unpaidCount: number;
@@ -165,5 +190,5 @@ export interface OverdueAgeingResponse {
     bySite: { site: string; total: number }[];
     rows: OverdueJobRow[];
   };
-  meta: { lastFetchedAt: string | null; error: string | null; today: string; view: string };
+  meta: { lastFetchedAt: string | null; error: string | null; today: string; view: string; levelLabels?: Record<string, string> };
 }

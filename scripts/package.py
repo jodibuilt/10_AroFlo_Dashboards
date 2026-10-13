@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +58,18 @@ def run(args, cwd):
     subprocess.run(args, cwd=cwd, check=True, shell=SHELL)
 
 
+def add(z, full, name):
+    """A zip entry carries a wall-clock time and no time zone, and App Service
+    reads it as UTC. Stamped with this PC's local time, anything packaged east
+    of Greenwich is "in the future" there, and tar says so about every file —
+    a thousand lines at the top of the log on each start. So: UTC."""
+    info = zipfile.ZipInfo.from_file(full, name)
+    info.date_time = time.gmtime(os.path.getmtime(full))[:6]
+    info.compress_type = zipfile.ZIP_DEFLATED
+    with open(full, "rb") as src:
+        z.writestr(info, src.read())
+
+
 if "--skip-frontend-build" not in sys.argv:
     run(["npm", "ci", "--no-audit", "--no-fund"], FRONTEND)
     run(["npm", "run", "build"], FRONTEND)
@@ -83,7 +96,7 @@ with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as z:
     for root, _dirs, files in os.walk(STAGE):
         for f in files:
             full = os.path.join(root, f)
-            z.write(full, os.path.relpath(full, STAGE).replace(os.sep, "/"))
+            add(z, full, os.path.relpath(full, STAGE).replace(os.sep, "/"))
             count += 1
 
 with zipfile.ZipFile(OUT) as z:

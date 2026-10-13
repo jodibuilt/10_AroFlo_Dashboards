@@ -18,6 +18,7 @@ const { openDb: openAuthDb } = require('./auth/db');
 const { seedFirstAdmin } = require('./auth/seed');
 const { createAuthRouter } = require('./auth/routes');
 const { requireAuthApi, requireAdmin } = require('./auth/middleware');
+const { createLoginThrottle } = require('./loginThrottle');
 const { openDb: openAppDb } = require('./db');
 
 const authDb = openAuthDb();
@@ -50,6 +51,24 @@ let lastManualRefreshAt = 0;
 // /auth routes below, and the static shell itself carries no data.
 const frontendDistDir = path.join(__dirname, '..', 'frontend', 'dist');
 const app = express();
+// On App Service every request arrives through Azure's own proxy. Trusting
+// that one hop makes req.ip the caller's address rather than the proxy's —
+// which is what the sign-in limit below counts by, and what the log records
+// against a rejected sign-in.
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+// Headers that cost nothing and close off the cheap attacks on a page that
+// is on the public internet: no guessing a file's type, no showing these
+// pages inside someone else's frame, no leaking the address to other sites,
+// and — once it is served over HTTPS (COOKIE_SECURE) — HTTPS only from then
+// on.
+app.use((req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Referrer-Policy', 'same-origin');
+  if (config.auth.cookieSecure) res.set('Strict-Transport-Security', 'max-age=31536000');
+  next();
+});
 // App Service on Linux doesn't compress responses itself, and the Reports
 // bundle (Plotly) is ~6 MB raw / ~1.8 MB gzipped.
 app.use(compression());
@@ -60,6 +79,9 @@ app.use(express.json());
 // that the process is up — no data, no cache state.
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
+// Ten wrong sign-ins from one address in fifteen minutes and that address
+// waits (src/loginThrottle.js).
+app.post('/auth/login', createLoginThrottle().middleware);
 app.use('/auth', createAuthRouter(authDb));
 // Vite content-hashes everything under assets/, so those can be cached
 // forever; index.html (and the admin page) are revalidated on every load.
@@ -93,6 +115,9 @@ app.get('/api/reporting/config', requireApiAuth, (req, res) => {
     targetClients: config.reporting.targetClients,
     reportTitle: config.reporting.reportTitle,
     reportSubtitle: config.reporting.reportSubtitle,
+    // The pages work out "today" and show times in this zone too, rather
+    // than in whatever each person's browser is set to.
+    timeZone: config.timeZone,
   });
 });
 app.get('/api/reporting/clients', requireApiAuth, (req, res) => res.json(buildReportingClients(cache)));

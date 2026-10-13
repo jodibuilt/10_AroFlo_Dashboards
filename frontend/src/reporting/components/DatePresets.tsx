@@ -1,17 +1,12 @@
 import React from 'react';
 import { Palette } from '../theme';
+import { dayOf, today, zonedNow } from '../time';
 
-// A day as a date input holds it — YYYY-MM-DD — in the browser's own time
-// zone. Not `toISOString()`: that is the day in UTC, which in Adelaide is
-// still yesterday until mid-morning, and "today" then leaves today's work
-// orders out of the range.
-export function localDay(d: Date = new Date()): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
+// Every date here is a day in the reports' time zone (Adelaide — see
+// ../time), as a date input holds it: YYYY-MM-DD.
 export function firstOfThisMonth(): string {
-  const d = new Date();
-  return localDay(new Date(d.getFullYear(), d.getMonth(), 1));
+  const d = zonedNow();
+  return dayOf(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
 interface Preset {
@@ -23,8 +18,7 @@ interface Preset {
 // One per month the loaded data reaches back to, then the whole lot. The
 // current month runs to today; earlier ones are whole months.
 function presets(coverageFrom: string | null): Preset[] {
-  const now = new Date();
-  const today = localDay(now);
+  const now = zonedNow();
   const first = coverageFrom ? new Date(coverageFrom.replace(/\//g, '-') + 'T00:00:00') : new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const start = isNaN(first.getTime()) ? new Date(now.getFullYear(), now.getMonth() - 1, 1) : first;
   const out: Preset[] = [];
@@ -32,11 +26,11 @@ function presets(coverageFrom: string | null): Preset[] {
     const thisMonth = m.getFullYear() === now.getFullYear() && m.getMonth() === now.getMonth();
     out.push({
       label: thisMonth ? 'This month' : m.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }),
-      from: localDay(m),
-      to: thisMonth ? today : localDay(new Date(m.getFullYear(), m.getMonth() + 1, 0)),
+      from: dayOf(m),
+      to: thisMonth ? today() : dayOf(new Date(m.getFullYear(), m.getMonth() + 1, 0)),
     });
   }
-  if (coverageFrom && out.length > 1) out.push({ label: 'Everything loaded', from: localDay(start), to: today });
+  if (coverageFrom && out.length > 1) out.push({ label: 'Everything loaded', from: dayOf(start), to: today() });
   return out;
 }
 

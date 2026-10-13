@@ -3,29 +3,53 @@
 // report says the same. Run with `npm test`.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { day, task, invoice, payment, cacheOf } = require('./helpers');
+const { execFileSync } = require('node:child_process');
+const { day, task, invoice, payment, cacheOf, now } = require('./helpers');
 const kpi = require('../src/kpi');
-const { codeFromName } = require('../src/priorities');
+const { zonedNow, dayOf } = require('../src/time');
+const { codeFromName, levelFromName } = require('../src/priorities');
 const { buildReportingKpis, buildOverdueAgeing, buildInvoicingReport, buildKpiMatrixTasks } = require('../src/views');
 
-test('priority names are read for their level', () => {
+test('priority names are read for the level they state, and nothing more', () => {
+  // [the level the name states, the level it is reported under]
   const expected = {
-    P1: 'P1',
-    AP1: 'P1',
-    AP5: 'P5',
-    'P4 - 30 days': 'P4',
-    'Priority Level 2 - Attend within 3 calendar days': 'P2',
-    PM: 'PM',
-    'PM - Preventative Maintenance': 'PM',
-    SM: 'PM',
-    Emergency: 'P1', // from the configured map
-    PHONECALL: null,
-    'SLA Urgent 1hour': null,
-    1: null,
-    P10: null,
-    SMS: null,
+    P1: ['P1', 'P1'],
+    AP1: ['P1', 'P1'],
+    AP4: ['P4', 'P4'],
+    AP5: ['P5', 'P4'], // level 5 is reported as part of P4
+    'AP5 - Attend within 30 calendar days': ['P5', 'P4'],
+    'P4 - 30 days': ['P4', 'P4'],
+    'Priority Level 2 - Attend within 3 calendar days': ['P2', 'P2'],
+    PM: ['PM', 'PM'],
+    'PM - Preventative Maintenance': ['PM', 'PM'],
+    Emergency: ['P1', 'P1'], // from the configured map
+    SM: [null, null], // not a name that states a level — it is not guessed at
+    PHONECALL: [null, null],
+    'SLA Urgent 1hour': [null, null],
+    1: [null, null],
+    P10: [null, null],
+    SMS: [null, null],
   };
-  for (const [name, level] of Object.entries(expected)) assert.equal(codeFromName(name), level, name);
+  for (const [name, [level, reported]] of Object.entries(expected)) {
+    assert.equal(levelFromName(name), level, `${name}: level`);
+    assert.equal(codeFromName(name), reported, `${name}: reported as`);
+  }
+});
+
+test('AP5 is counted with P4, and its group is headed P4/P5 only when it holds AP5 jobs', () => {
+  const range = { dateFrom: day(-30), dateTo: day(0), view: 'overall' };
+  const withAp5 = [task({ priority: 'id-p4', due: day(5) }), task({ priority: 'id-ap5', client: 'South Australian Housing Trust', due: day(-2) })];
+  let result = buildReportingKpis(cacheOf({ jobs: withAp5 }), range);
+  const p4 = result.priorityCompliance.find((r) => r.priority === 'P4');
+  // The P4 job is not due yet (in progress); the AP5 one is open past its due date (late).
+  assert.deepEqual([p4.total, p4.onTime, p4.late, p4.inProgress, p4.actualPercent, p4.targetPercent], [2, 0, 1, 1, 0, 90]);
+  assert.deepEqual(result.breakdown.map((r) => [r.priority, r.priorityName]).sort(), [['P4', 'AP5'], ['P4', 'P4']]);
+  assert.deepEqual(result.pmBreakdown, []);
+  assert.deepEqual(result.meta.levelLabels, { P4: 'P4/P5' });
+  assert.deepEqual(buildOverdueAgeing(cacheOf({ jobs: withAp5 }), { view: 'overall' }).meta.levelLabels, { P4: 'P4/P5' });
+  // No AP5 job in the selection: plain P4.
+  result = buildReportingKpis(cacheOf({ jobs: withAp5 }), { ...range, view: 'Ventia' });
+  assert.deepEqual(result.meta.levelLabels, {});
 });
 
 test('a work order is overdue when it is open past its due date, or was finished after it', () => {
@@ -38,16 +62,47 @@ test('a work order is overdue when it is open past its due date, or was finished
     ['open, due next week', task({ due: day(7) }), false],
     ['open, no due date', task({}), false],
   ];
-  for (const [what, t, overdue] of cases) assert.equal(kpi.isOverdue(t), overdue, what);
+  for (const [what, t, overdue] of cases) assert.equal(kpi.isOverdue(t, now()), overdue, what);
 });
 
 test('days late', () => {
-  assert.equal(kpi.computeDaysLate(task({ status: 'Completed', due: day(-10), completed: day(-8) })), 2);
-  assert.equal(kpi.computeDaysLate(task({ status: 'Completed', due: day(-5), completed: day(-6) })), 0);
-  assert.equal(kpi.computeDaysLate(task({ due: day(-4) })), 4);
-  assert.equal(kpi.computeDaysLate(task({ due: day(3) })), 0);
-  assert.equal(kpi.computeDaysLate(task({})), null);
+  assert.equal(kpi.computeDaysLate(task({ status: 'Completed', due: day(-10), completed: day(-8) }), now()), 2);
+  assert.equal(kpi.computeDaysLate(task({ status: 'Completed', due: day(-5), completed: day(-6) }), now()), 0);
+  assert.equal(kpi.computeDaysLate(task({ due: day(-4) }), now()), 4);
+  assert.equal(kpi.computeDaysLate(task({ due: day(3) }), now()), 0);
+  assert.equal(kpi.computeDaysLate(task({}), now()), null);
 });
+
+test('"today" is the day in Adelaide, whatever the clock of the machine says', () => {
+  // The same instant, read on Adelaide's wall clock. Summer time (UTC+10:30)
+  // starts on the first Sunday of October and ends on the first of April.
+  const read = (iso) => {
+    const d = zonedNow(new Date(iso), 'Australia/Adelaide');
+    return `${dayOf(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  assert.equal(read('2026-10-12T22:00:00Z'), '2026-10-13 08:30'); // already the 13th, still the 12th in UTC
+  assert.equal(read('2026-10-13T13:29:00Z'), '2026-10-13 23:59');
+  assert.equal(read('2026-10-13T13:30:00Z'), '2026-10-14 00:00'); // midnight in Adelaide
+  assert.equal(read('2026-07-01T14:29:00Z'), '2026-07-01 23:59'); // winter: UTC+9:30
+  assert.equal(read('2026-07-01T14:30:00Z'), '2026-07-02 00:00');
+  assert.equal(read('2026-10-31T13:30:00Z'), '2026-11-01 00:00'); // the month turns over on Adelaide's clock
+  // And the reports say which day they took.
+  const { meta } = buildOverdueAgeing(cacheOf({ jobs: [] }), { view: 'overall' });
+  assert.equal(meta.today, day(0).replace(/\//g, '-'));
+});
+
+// Every test in this file again, on a machine whose own clock is somewhere
+// else — a server in the cloud is usually on UTC, and Honolulu is the far
+// side of midnight from Adelaide for most of the day. If any report took
+// "today" from the machine, something above would fail there.
+for (const zone of ['UTC', 'Pacific/Honolulu', 'Europe/London']) {
+  test(`the reports come out the same on a machine set to ${zone}`, { skip: Boolean(process.env.REPORTS_TZ_RERUN) }, () => {
+    execFileSync(process.execPath, ['--test', __filename], {
+      env: { ...process.env, TZ: zone, REPORTS_TZ_RERUN: '1' },
+      stdio: 'pipe',
+    });
+  });
+}
 
 test('General Statistics', () => {
   const jobs = [
@@ -66,8 +121,13 @@ test('General Statistics', () => {
     { issued: 8, completed: 4, outstanding: 4, overdue: 2 },
   );
   assert.equal(summary.completionRate, 50);
-  // Overdue rate is overdue / completed, as in the earlier dashboard.
+  // The overdue rate is given both ways: of completed (as in the earlier
+  // dashboard), and of issued.
   assert.equal(summary.overdueRate, 50);
+  assert.equal(summary.overdueRateOfIssued, 25);
+  // Nothing issued: no rate to give, not a division by nothing.
+  const none = buildReportingKpis(cacheOf({ jobs }), { dateFrom: day(-400), dateTo: day(-300), view: 'overall' }).summary;
+  assert.deepEqual([none.issued, none.overdueRate, none.overdueRateOfIssued], [0, 0, 0]);
 });
 
 test('"open in system" counts every unfinished work order for the clients, whatever the date range', () => {
@@ -93,38 +153,80 @@ test('the date range is by requested date and includes both end days', () => {
   assert.equal(buildReportingKpis(cacheOf({ jobs }), { dateFrom: iso(-10), dateTo: iso(-3), view: 'overall' }).summary.issued, 3);
 });
 
-test('the client filter takes one client, several, or everyone', () => {
-  const jobs = [task({ client: 'Ventia' }), task({ client: 'Ventia' }), task({ client: 'South Australian Housing Trust' }), task({ client: 'Other Co' })];
+test('the client filter: Ventia, SAHA, every other company together, any mix, or everyone', () => {
+  const jobs = [
+    task({ client: 'Ventia' }),
+    task({ client: 'Ventia' }),
+    task({ client: 'South Australian Housing Trust' }),
+    task({ client: 'Other Co' }),
+    task({ client: 'Another Builder' }),
+    task({ client: '' }), // no client on the job: not a contract client's, so with the others
+  ];
   const issued = (view) => buildReportingKpis(cacheOf({ jobs }), { dateFrom: day(-30), dateTo: day(0), view }).summary.issued;
-  assert.equal(issued('overall'), 4);
+  assert.equal(issued('overall'), 6);
   assert.equal(issued('Ventia'), 2);
-  assert.equal(issued('South Australian Housing Trust||Ventia'), 3);
+  assert.equal(issued('South Australian Housing Trust'), 1);
+  assert.equal(issued('South Australian Housing Trust||Ventia'), 3); // the default
+  assert.equal(issued('others'), 3);
+  assert.equal(issued('Ventia||others'), 5);
+  assert.equal(issued('South Australian Housing Trust||Ventia||others'), 6);
   assert.equal(issued('Nobody'), 0);
+  // The overdue list takes the same filter.
+  const overdue = jobs.map((t) => ({ ...t, dueDate: day(-3), requiredCompletedDate: day(-3) }));
+  const count = (view) => buildOverdueAgeing(cacheOf({ jobs: overdue }), { view }).data.total;
+  assert.deepEqual([count('overall'), count('Ventia'), count('others')], [6, 2, 3]);
 });
 
-test('Target KPI Compliance: share of each level not overdue, AP counted with P', () => {
+test('Target KPI Compliance: on time out of on time and late, in progress counted apart, AP counted with P', () => {
   const jobs = [
-    task({ priority: 'id-p1', due: day(5) }),
+    task({ priority: 'id-p1', due: day(5) }), // open, not due yet: in progress
     task({ priority: 'id-ap1', client: 'South Australian Housing Trust', due: day(-2) }), // overdue
     task({ priority: 'id-p1', status: 'Completed', due: day(-3), completed: day(-3) }),
     task({ priority: 'id-ap1', client: 'South Australian Housing Trust', status: 'Completed', due: day(-3), completed: day(-4) }),
     task({ priority: 'id-pm', due: day(-1) }), // overdue
-    task({ priority: 'id-sm', due: day(10) }),
-    task({ priority: 'id-ap5', due: day(-1) }), // level 5 has no target
+    task({ priority: 'id-pm', due: day(10) }),
+    task({ priority: 'id-ap5', due: day(-1) }), // level 5: counted with P4
+    task({ priority: 'id-p4', due: day(8) }),
+    task({ priority: 'id-sm', due: day(-1) }), // not on the scale
     task({ priority: 'id-phone', due: day(-1) }), // not on the scale
     task({ priority: '', due: day(-1) }), // no priority
   ];
   const result = buildReportingKpis(cacheOf({ jobs }), { dateFrom: day(-30), dateTo: day(0), view: 'overall' });
   const rows = Object.fromEntries(result.priorityCompliance.map((r) => [r.priority, r]));
-  assert.deepEqual(Object.keys(rows).sort(), ['P1', 'PM']);
-  assert.deepEqual([rows.P1.total, rows.P1.actualPercent, rows.P1.targetPercent, rows.P1.status], [4, 75, 98, 'Below Target']);
-  assert.deepEqual([rows.PM.total, rows.PM.actualPercent, rows.PM.targetPercent, rows.PM.status], [2, 50, 90, 'Below Target']);
+  assert.deepEqual(Object.keys(rows).sort(), ['P1', 'P4', 'PM']);
+  const figures = (r) => [r.total, r.onTime, r.late, r.inProgress, r.targetPercent, r.status];
+  // P1: two finished on time, one open past due, one not due yet — 2 of the 3 decided.
+  assert.deepEqual(figures(rows.P1), [4, 2, 1, 1, 98, 'Below Target']);
+  assert.equal(Math.round(rows.P1.actualPercent * 10) / 10, 66.7);
+  assert.equal(Math.round(rows.P1.variancePp * 10) / 10, -31.3);
+  assert.deepEqual([...figures(rows.P4), rows.P4.actualPercent], [2, 0, 1, 1, 90, 'Below Target', 0]);
+  assert.deepEqual([...figures(rows.PM), rows.PM.actualPercent], [2, 0, 1, 1, 90, 'Below Target', 0]);
+  // On time, late and in progress always add up to the level's work orders.
+  for (const r of result.priorityCompliance) assert.equal(r.onTime + r.late + r.inProgress, r.total, r.priority);
   // Everything still counts in General Statistics, on the scale or not.
-  assert.equal(result.summary.issued, 9);
-  assert.equal(result.summary.overdue, 5);
-  // Level 5 goes to the P5 / PM table; the off-scale ones to neither.
-  assert.deepEqual(result.breakdown.map((r) => r.priority).sort(), ['P1', 'P1', 'P1', 'P1']);
-  assert.deepEqual(result.pmBreakdown.map((r) => r.priority).sort(), ['P5', 'PM', 'PM']);
+  assert.equal(result.summary.issued, 11);
+  assert.equal(result.summary.overdue, 6);
+  // AP5 is in the P4 table; PM has its own; the off-scale ones are in neither.
+  assert.deepEqual(result.breakdown.map((r) => r.priority).sort(), ['P1', 'P1', 'P1', 'P1', 'P4', 'P4']);
+  assert.deepEqual(result.pmBreakdown.map((r) => r.priority).sort(), ['PM', 'PM']);
+});
+
+test('Target KPI Compliance: a level with nothing finished or overdue has no percentage yet', () => {
+  const range = { dateFrom: day(-30), dateTo: day(0), view: 'overall' };
+  const open = [task({ priority: 'id-p2', due: day(3) }), task({ priority: 'id-p2', due: day(9) })];
+  let [p2] = buildReportingKpis(cacheOf({ jobs: open }), range).priorityCompliance;
+  assert.deepEqual(
+    [p2.priority, p2.total, p2.onTime, p2.late, p2.inProgress, p2.actualPercent, p2.variancePp, p2.status],
+    ['P2', 2, 0, 0, 2, null, null, 'In progress'],
+  );
+  // One of them finished on time: 1 of 1 decided, and the other still in progress.
+  const one = [task({ priority: 'id-p2', status: 'Completed', due: day(-1), completed: day(-1) }), task({ priority: 'id-p2', due: day(9) })];
+  [p2] = buildReportingKpis(cacheOf({ jobs: one }), range).priorityCompliance;
+  assert.deepEqual([p2.onTime, p2.late, p2.inProgress, p2.actualPercent, p2.status], [1, 0, 1, 100, 'Met']);
+  // Finished after its due date: late, the same as open past it.
+  const lateDone = [task({ priority: 'id-p2', status: 'Completed', due: day(-4), completed: day(-2) }), task({ priority: 'id-p2', status: 'Completed', due: day(-1), completed: day(-1) })];
+  [p2] = buildReportingKpis(cacheOf({ jobs: lateDone }), range).priorityCompliance;
+  assert.deepEqual([p2.onTime, p2.late, p2.inProgress, p2.actualPercent], [1, 1, 0, 50]);
 });
 
 test('the breakdown tables show the job number as the Task ID', () => {
@@ -166,7 +268,8 @@ test('Delay Reason: a late job’s current substatus, or else what its notes say
 test('a delay reason explains a late job without changing any figure', () => {
   const fields = { priority: 'id-p1', due: day(-2) };
   const figures = (extra) => {
-    const result = buildReportingKpis(cacheOf({ jobs: [task({ ...fields, ...extra }), task({ priority: 'id-p1', due: day(3) })] }), { dateFrom: day(-30), dateTo: day(0), view: 'overall' });
+    const onTime = task({ priority: 'id-p1', status: 'Completed', due: day(-3), completed: day(-3) });
+    const result = buildReportingKpis(cacheOf({ jobs: [task({ ...fields, ...extra }), onTime] }), { dateFrom: day(-30), dateTo: day(0), view: 'overall' });
     return [result.summary.overdue, result.priorityCompliance[0].actualPercent];
   };
   assert.deepEqual(figures({ substatus: 'Non Access' }), figures({}));
@@ -239,8 +342,7 @@ test('Overdue & Ageing lists priorities up the scale, P1 to P4 then P5 and PM, n
     ['P1', 1],
     ['P2', 1],
     ['P3', 3],
-    ['P4', 2],
-    ['P5', 2],
+    ['P4', 4], // P4 and AP5 together
     ['PM', 4],
     ['PHONECALL', 5], // not on the scale: after it, by name
     ['No priority', 6],
@@ -255,6 +357,7 @@ test('Invoicing: submitted, paid and unpaid, by client group', () => {
     invoice({ id: 'd', client: 'Some Builder', status: 'Approved', inc: 55, ex: 50 }),
     invoice({ id: 'e', client: 'Ventia', status: 'Pending Approval', inc: 999, ex: 900 }), // a draft: not submitted
     invoice({ id: 'f', client: 'Ventia', status: 'Approved', invoiced: day(-60), inc: 777, ex: 700 }), // outside the range
+    invoice({ id: 'g', client: 'Ventia', status: 'In Progress', inc: 44, ex: 40 }), // gone to the client: submitted, and said to be in progress
   ];
   const payments = [
     payment({ id: 'p1', invoiceId: 'b', amount: 220 }), // paid in full
@@ -264,27 +367,29 @@ test('Invoicing: submitted, paid and unpaid, by client group', () => {
   ];
   const { data } = buildInvoicingReport(cacheOf({ invoices, payments }), { view: 'all', dateFrom: day(-30), dateTo: day(0) });
   assert.deepEqual(data.kpis, {
-    submittedCount: 4,
-    submittedTotalInc: 715,
-    submittedTotalEx: 650,
+    submittedCount: 5,
+    submittedTotalInc: 759,
+    submittedTotalEx: 690,
+    inProgressCount: 1,
+    inProgressTotalInc: 44,
     paidCount: 2,
     paidTotalInc: 275,
-    unpaidCount: 2,
-    unpaidTotalInc: 440,
+    unpaidCount: 3,
+    unpaidTotalInc: 484,
   });
   const byClient = Object.fromEntries(data.byClient.map((r) => [r.client, [r.submittedCount, r.totalInc, r.paidCount, r.unpaidValue]]));
   assert.deepEqual(byClient, {
-    Ventia: [2, 330, 1, 110],
+    Ventia: [3, 374, 1, 154],
     SAHA: [1, 330, 0, 330],
     'Projects/Other': [1, 55, 1, 0],
-    Total: [4, 715, 2, 440],
+    Total: [5, 759, 2, 484],
   });
   // The status table counts drafts too.
   const pending = data.byStatus.find((r) => r.status === 'Pending Approval' && r.client === 'Ventia');
   assert.deepEqual([pending.count, pending.totalInc], [1, 999]);
   // Picking client groups.
   const two = buildInvoicingReport(cacheOf({ invoices, payments }), { view: 'SAHA||Ventia', dateFrom: day(-30), dateTo: day(0) }).data;
-  assert.deepEqual([two.buckets, two.kpis.submittedCount], [['Ventia', 'SAHA'], 3]);
+  assert.deepEqual([two.buckets, two.kpis.submittedCount, two.kpis.inProgressCount], [['Ventia', 'SAHA'], 4, 1]);
 });
 
 test('the KPI Matrix feed carries the level, and a midnight due stays a date', () => {
@@ -305,7 +410,7 @@ test('the KPI Matrix feed calls a job finished when Work Orders does: by its sta
   const { data } = buildKpiMatrixTasks(cacheOf({ jobs }));
   assert.deepEqual(data.map((t) => [t.jobNumber, t.completedAt]), [['601', `${day(-6)} 15:00:00`], ['602', null], ['603', null], ['604', null]]);
   // And Work Orders agrees which of them are overdue: the two that are open.
-  assert.deepEqual(jobs.map((t) => kpi.isOverdue(t)), [false, true, true, false]);
+  assert.deepEqual(jobs.map((t) => kpi.isOverdue(t, now())), [false, true, true, false]);
   // The one that can't be judged goes over without a due date, so the
   // matrix doesn't take it for an open job that has run past it.
   assert.deepEqual(data.map((t) => Boolean(t.dueAt)), [true, true, true, false]);

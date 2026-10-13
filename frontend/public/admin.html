@@ -26,7 +26,7 @@
     </div>
     <div class="topbar-right">
       <a href="/" class="btn btn-secondary">Back to dashboards</a>
-      <button id="logoutBtn" class="btn btn-secondary">Logout</button>
+      <button id="logoutBtn" class="btn btn-secondary">Sign out</button>
     </div>
   </header>
 
@@ -34,7 +34,7 @@
     <p id="notAuthorized" class="limitation-note" style="display:none;">Not authorized — admin access required.</p>
 
     <div id="adminContent" style="display:none;">
-      <p class="section-note">Create user, then share the temporary password with them directly — there's no email/reset-link flow yet.</p>
+      <p class="section-note">Create a user, then give them the temporary password yourself — passwords are not emailed.</p>
       <form id="createForm" class="admin-form-row">
         <input id="newUsername" type="text" placeholder="Username" aria-label="Username" required />
         <input id="newDisplayName" type="text" placeholder="Display name" aria-label="Display name" required />

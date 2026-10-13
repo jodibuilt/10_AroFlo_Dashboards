@@ -3,14 +3,18 @@ const { parseAroFloDateTime } = require('./aroflo/aroFloDates');
 const { daysBetween, isPastDate } = require('./normalize');
 const kpi = require('./kpi');
 const { delayReasonFor } = require('./delayReason');
+const { levelLabels } = require('./priorities');
+const { zonedNow, dayOf } = require('./time');
 
+// The levels the reports are built on. Level 5 (AP5) is reported as part of
+// P4 — see src/priorities.js — so it has no group of its own.
 const REPORTING_BREAKDOWN_PRIORITIES = ['P1', 'P2', 'P3', 'P4'];
-const REPORTING_PM_PRIORITIES = ['P5', 'PM'];
+const REPORTING_PM_PRIORITIES = ['PM'];
 const NO_PRIORITY = 'No priority';
 
 // The order priorities are listed in wherever they are listed: up the scale,
-// P1 to P4, then P5 and PM — not by how many jobs each has. A priority with
-// no level on the scale comes after those, by name, and "No priority" last.
+// P1 to P4, then PM — not by how many jobs each has. A priority with no
+// level on the scale comes after those, by name, and "No priority" last.
 const PRIORITY_SCALE = [...REPORTING_BREAKDOWN_PRIORITIES, ...REPORTING_PM_PRIORITIES];
 function comparePriorities(a, b) {
   const rank = (p) => {
@@ -32,16 +36,61 @@ function viewParts(view) {
     .filter(Boolean);
 }
 
-// The work-order reports' client filter: 'overall' is everyone, anything
-// else is the real client names to keep.
+// Every client that isn't one of the contract's (KPI_TARGET_CLIENTS_JSON),
+// taken together: the "Projects / Other" group, on every dashboard.
+const OTHER_CLIENTS = 'others';
+
+// The work-order reports' client filter. 'overall' (or nothing) is everyone;
+// otherwise what is picked: a contract client by its name in AroFlo, and/or
+// OTHER_CLIENTS for all the rest combined.
 function tasksInView(tasks, view) {
-  const clients = viewParts(view).filter((name) => name !== 'overall');
-  return clients.length ? tasks.filter((t) => clients.includes(t.client)) : tasks;
+  const picked = viewParts(view).filter((name) => name !== 'overall');
+  if (!picked.length) return tasks;
+  const contract = Object.keys(config.reporting.targetClients);
+  const others = picked.includes(OTHER_CLIENTS);
+  return tasks.filter((t) => picked.includes(t.client) || (others && !contract.includes(t.client)));
 }
 
 // Not yet Completed / Archived (COMPLETED_TASK_STATUSES).
 function isOpen(task) {
   return !config.completedTaskStatuses.includes(String(task.status || '').toLowerCase());
+}
+
+// Target KPI Compliance: of each level's work orders whose outcome is known,
+// the share that were on time — with the ones still in progress counted as
+// their own figure, in neither (confirmed 2026-10-13: "in process but not
+// done yet, different stats"). Three kinds of job, adding up to the total:
+//   late        — finished after its due date, or still open past it
+//   on time     — finished, on or before its due date
+//   in progress — everything else: open and not yet due (or, rarely, a job
+//                 that can't be judged — no due date, or finished with no
+//                 completed date)
+// The percentage is on time ÷ (on time + late): the same sum, on the same
+// jobs, as the KPI Matrix's "Completed" rows, so the two pages show one
+// number. A level with nothing decided yet has no percentage — it is all
+// in progress. `tasks` carry their level in priorityLabel, as kpi.js reads it.
+function complianceByLevel(tasks, priorityTargets, today) {
+  const rows = [];
+  for (const [level, target] of Object.entries(priorityTargets)) {
+    const inLevel = tasks.filter((t) => t.priorityLabel === level);
+    if (!inLevel.length) continue;
+    const late = inLevel.filter((t) => kpi.isOverdue(t, today)).length;
+    const onTime = inLevel.filter((t) => !isOpen(t) && t.requiredCompletedDate && t.completedDate && !kpi.isOverdue(t, today)).length;
+    const decided = onTime + late;
+    const actualPercent = decided > 0 ? (onTime / decided) * 100 : null;
+    rows.push({
+      priority: level,
+      total: inLevel.length,
+      onTime,
+      late,
+      inProgress: inLevel.length - decided,
+      actualPercent,
+      targetPercent: target,
+      variancePp: actualPercent === null ? null : actualPercent - target,
+      status: actualPercent === null ? 'In progress' : actualPercent >= target ? 'Met' : 'Below Target',
+    });
+  }
+  return rows;
 }
 
 // Ported from aroflo_dash. `view` is either the sentinel 'overall' (no client
@@ -53,6 +102,9 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
   const { records, lastFetchedAt, error } = cache.get('jobs');
   const { priorityCodeMap, priorityTargets } = config.reporting;
   const delayReasonSubstatuses = config.kpi.delayReasonSubstatuses;
+  // Overdue and days late are judged against today in Adelaide (src/time.js).
+  // kpi.js would otherwise take this machine's own idea of the date.
+  const today = zonedNow();
   const prioritiesState = cache.get('priorities');
 
   // requestDate is always zero-padded "YYYY/MM/DD" (AroFlo v1's own format —
@@ -78,12 +130,15 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
   // level on the scale (src/priorities.js) is DROPPED here, so this must not
   // feed the General Statistics KPIs. kpi.js reads the level from
   // priorityLabel, hence the swap.
-  const pCoded = scoped.filter((t) => t.priorityCode).map((t) => ({ ...t, priorityLabel: t.priorityCode }));
+  const pCoded = scoped.filter((t) => t.priorityCode).map((t) => ({ ...t, priorityName: t.priorityLabel, priorityLabel: t.priorityCode }));
 
-  // Two things kpi.buildBreakdownTable's rows get before they go out:
+  // Three things kpi.buildBreakdownTable's rows get before they go out:
   //
   // The delay reason, from the job's substatus or else its notes
   // (src/delayReason.js) — kpi.js's own only knows an exact substatus match.
+  //
+  // The priority as AroFlo names it ("AP5"), beside the level the row is
+  // grouped under ("P4") — a group can hold more than one.
   //
   // And the "Task ID" people know, which is AroFlo's job number. The
   // record's own `taskid` is an opaque internal code ("JidaLyxQPEciCg=="),
@@ -91,11 +146,16 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
   // the Excel / PDF exports all print it as-is.
   const byTaskId = new Map(pCoded.map((t) => [t.taskId, t]));
   const finishRows = (rows) =>
-    rows.map((r) => ({
-      ...r,
-      delayReason: delayReasonFor(byTaskId.get(r.taskId) || {}, r.daysLate),
-      taskId: r.jobNumber || r.taskId,
-    }));
+    rows.map((r) => {
+      const task = byTaskId.get(r.taskId) || {};
+      return {
+        ...r,
+        priorityName: task.priorityName || r.priority,
+        delayReason: delayReasonFor(task, r.daysLate),
+        taskId: r.jobNumber || r.taskId,
+      };
+    });
+  const stats = kpi.computeKpis(scoped, today);
 
   // test_all_aroflo fills this from its trigger engine's substatus history.
   // There is no engine here, so kpi.buildBreakdownTable works from each
@@ -105,18 +165,23 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
 
   return {
     summary: {
-      ...kpi.computeKpis(scoped),
+      ...stats,
+      // The overdue rate both ways (confirmed 2026-10-13: "do both and
+      // specify"). `overdueRate` above is overdue ÷ completed, as the
+      // earlier dashboard had it, and passes 100% while few of the period's
+      // jobs are finished; this one is overdue ÷ issued and can't.
+      overdueRateOfIssued: stats.issued > 0 ? (stats.overdue / stats.issued) * 100 : 0,
       // "Outstanding in the system": every loaded work order for these
       // clients that isn't finished, whatever period it was requested in.
       // `outstanding` above is only the ones requested inside the date range.
       openInSystem: tasksInView(records, view).filter(isOpen).length,
     },
-    priorityCompliance: kpi.computePriorityKpiCompliance(pCoded, priorityTargets),
+    priorityCompliance: complianceByLevel(pCoded, priorityTargets, today),
     breakdown: finishRows(
-      kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_BREAKDOWN_PRIORITIES, ascending: false, ...breakdownOpts }),
+      kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_BREAKDOWN_PRIORITIES, ascending: false, ...breakdownOpts }, today),
     ),
     pmBreakdown: finishRows(
-      kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_PM_PRIORITIES, ascending: false, ...breakdownOpts }),
+      kpi.buildBreakdownTable(pCoded, { priorities: REPORTING_PM_PRIORITIES, ascending: false, ...breakdownOpts }, today),
     ),
     // Raw scoped tasks (NOT priority-filtered) for the frontend's own chart
     // aggregation (trend/status/client-comparison need every task; the
@@ -138,6 +203,8 @@ function buildReportingKpis(cache, { dateFrom, dateTo, view }) {
       // come from AroFlo's own priority names, so it only reads false when
       // there is neither that list nor a configured map to fall back on.
       priorityCodeMapConfigured: prioritiesState.records.length > 0 || Object.keys(priorityCodeMap).length > 0,
+      // { P4: 'P4/P5' } when the P4 group here holds level-5 (AP5) jobs.
+      levelLabels: levelLabels(scoped),
     },
   };
 }
@@ -177,7 +244,7 @@ function daysOverdueOf(dueDate, today) {
 
 function buildOverdueAgeing(cache, { view } = {}) {
   const { records, lastFetchedAt, error } = cache.get('jobs');
-  const today = new Date();
+  const today = zonedNow();
 
   const scoped = tasksInView(records, view);
   const overdue = scoped.filter((t) => isOpen(t) && isPastDate(t.dueDate));
@@ -236,7 +303,7 @@ function buildOverdueAgeing(cache, { view } = {}) {
       bySite: [...bySite.entries()].map(([site, total]) => ({ site, total })).sort((a, b) => b.total - a.total),
       rows,
     },
-    meta: { lastFetchedAt, error, today: today.toISOString().slice(0, 10), view: view || 'overall' },
+    meta: { lastFetchedAt, error, today: dayOf(today), view: view || 'overall', levelLabels: levelLabels(overdue) },
   };
 }
 
@@ -333,11 +400,17 @@ function buildInvoicingReport(cache, { view, dateFrom, dateTo } = {}) {
   const submitted = inRange.filter((r) => r.isSubmitted);
   const paid = submitted.filter((r) => r.isPaid);
   const unpaid = submitted.filter((r) => !r.isPaid);
+  // "In Progress" invoices have gone to the client, so they count as
+  // submitted — and are said to be in progress wherever submitted is shown
+  // (confirmed 2026-10-13).
+  const inProgress = submitted.filter((r) => String(r.status || '').toLowerCase() === 'in progress');
 
   const kpis = {
     submittedCount: submitted.length,
     submittedTotalInc: _sum(submitted, 'totalInc'),
     submittedTotalEx: _sum(submitted, 'totalEx'),
+    inProgressCount: inProgress.length,
+    inProgressTotalInc: _sum(inProgress, 'totalInc'),
     paidCount: paid.length,
     paidTotalInc: _sum(paid, 'totalInc'),
     unpaidCount: unpaid.length,
@@ -469,10 +542,12 @@ function buildKpiMatrixTasks(cache) {
         client: t.client,
         status: t.status,
         substatus: t.substatus,
-        // The matrix tiers on the P-scale, so it gets the level. A priority
-        // without one goes over under its AroFlo name (or bare id), so the
-        // matrix's diagnostics can say what it is instead of silently dropping it.
-        priority: t.priorityCode || t.priorityLabel || t.priorityId,
+        // The matrix tiers on the P-scale, so it gets the level the name
+        // states — "P5" for AP5, which the matrix puts in its P4 tier and
+        // heads "P4/P5". A priority without a level goes over under its
+        // AroFlo name (or bare id), so the matrix's diagnostics can say what
+        // it is instead of silently dropping it.
+        priority: t.priorityLevel || t.priorityLabel || t.priorityId,
         requestedAt: t.requestDateTime || t.requestDate,
         dueAt: !open && !completedAt ? null : t.dueDateTime || t.dueDate,
         startedAt: t.actualStartDate,

@@ -44,6 +44,11 @@ const config = {
     s.toLowerCase()
   ),
   logLevel: process.env.LOG_LEVEL || 'info',
+  // The time zone the reports run on: what day "today" is (overdue, days
+  // late, the month just started) and how times are shown. Fixed, so it
+  // doesn't follow the server's own clock setting or each person's browser
+  // (src/time.js). An IANA name.
+  timeZone: process.env.REPORT_TIME_ZONE || 'Australia/Adelaide',
   db: {
     // Nav visibility + per-user Reports edits (src/db.js). Relative to the
     // project root unless absolute — on App Service point this at /home/data
@@ -122,11 +127,13 @@ const config = {
     reportTitle: process.env.KPI_REPORT_TITLE || 'AroFlo Reporting Dashboard',
     reportSubtitle: process.env.KPI_REPORT_SUBTITLE || 'SAHA + Ventia work orders',
     // Invoicing report (ported from aroflo_dash's invoicing.py). "Submitted" =
-    // an invoice that has left internal drafting. AroFlo's real invoice
-    // statuses are not started / pending approval / approved / processed;
-    // approved + processed are locked and count as submitted (user-confirmed
-    // in aroflo_dash, 2026-07-14).
-    submittedInvoiceStatuses: parseList(process.env.KPI_SUBMITTED_INVOICE_STATUSES, ['approved', 'processed']).map(
+    // an invoice that has left internal drafting. AroFlo's invoice statuses
+    // are not started / pending approval / approved / in progress /
+    // processed. Approved + processed are locked and count as submitted
+    // (user-confirmed in aroflo_dash, 2026-07-14); in progress has gone to
+    // the client, so it counts too, and is shown as in progress (confirmed
+    // 2026-10-13).
+    submittedInvoiceStatuses: parseList(process.env.KPI_SUBMITTED_INVOICE_STATUSES, ['approved', 'in progress', 'processed']).map(
       (s) => s.toLowerCase(),
     ),
     // Lifecycle order for the "Invoices by Status" table.
@@ -134,6 +141,7 @@ const config = {
       'not started',
       'pending approval',
       'approved',
+      'in progress',
       'processed',
     ]).map((s) => s.toLowerCase()),
   },

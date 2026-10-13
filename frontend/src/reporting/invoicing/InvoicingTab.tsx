@@ -6,8 +6,10 @@ import { fetchInvoicingReport } from '../../services/reportingInvoicing';
 import { formatCoverage } from '../../services/reportingRefresh';
 import { buildInvoicingExcel, buildInvoicingPdf } from './exportInvoicing';
 import { ClientMultiSelect, decodeClients, encodeClients } from '../components/ClientMultiSelect';
-import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, FilterKind, NoMatches, useTableControls } from '../components/tableControls';
-import { DatePresets, firstOfThisMonth, localDay } from '../components/DatePresets';
+import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, DownloadCsv, FilterKind, NoMatches, useTableControls } from '../components/tableControls';
+import { DatePresets, firstOfThisMonth } from '../components/DatePresets';
+import { ReportDownloads } from '../components/ReportDownloads';
+import { dayOfInstant, formatDay, today, zoneName } from '../time';
 
 // The client groups this report sorts every invoice into. Any number can be
 // picked; none is all of them ('all').
@@ -17,9 +19,9 @@ const VIEW_OPTIONS = [
   { value: 'others', label: 'Projects / Other' },
 ];
 
+// Both in Adelaide time, wherever the browser is — see ../time.
 const firstOfMonth = firstOfThisMonth;
-// Today here, not in UTC — see localDay.
-const todayStr = (): string => localDay();
+const todayStr = today;
 function loadLocal(key: string, fallback: string): string {
   try {
     return localStorage.getItem(key) ?? fallback;
@@ -31,11 +33,7 @@ function money(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
   return `$${Math.round(n).toLocaleString()}`;
 }
-function fmtDate(v: string | null): string {
-  if (!v) return '';
-  const d = new Date(v.replace(/\//g, '-'));
-  return isNaN(d.getTime()) ? v : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-}
+const fmtDate = (v: string | null): string => formatDay(v);
 
 interface Props {
   palette: Palette;
@@ -94,6 +92,7 @@ const ReportTable: React.FC<ReportTableProps> = ({ title, cols, rows, boldRow, p
           {title}
         </h3>
         {filterable && rows.length > 0 && <ControlSummary controls={controls} palette={palette} noun="invoices" />}
+        {filterable && rows.length > 0 && <DownloadCsv controls={controls} palette={palette} name="invoice list" />}
       </div>
       {/* The surface background is what makes the stripes show: striped
           rows are the page colour, so on a bare page they vanish. */}
@@ -154,10 +153,6 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
   const [dateTo, setDateTo] = useState(todayStr);
   const [data, setData] = useState<InvoicingReportResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
-  const [excelBlob, setExcelBlob] = useState<{ blob: Blob; filename: string } | null>(null);
-  const [pdfBlob, setPdfBlob] = useState<{ blob: Blob; filename: string } | null>(null);
 
   useEffect(() => {
     try {
@@ -180,8 +175,6 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
 
   useEffect(() => {
     let cancelled = false;
-    setExcelBlob(null);
-    setPdfBlob(null);
     fetchInvoicingReport(view, from, dateTo)
       .then((res) => {
         if (cancelled) return;
@@ -207,28 +200,11 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
     return '';
   }, [data]);
 
-  async function prepare() {
-    if (!data) return;
-    setBusy(true);
-    setExportError(null);
-    try {
-      const args = { data: data.data, meta: data.meta, view: viewLabel, dateFrom: from, dateTo, paymentsNote };
-      setExcelBlob(await buildInvoicingExcel(args));
-      setPdfBlob(await buildInvoicingPdf(args));
-    } catch (e) {
-      setExportError(e instanceof Error ? e.message : 'Failed to build reports.');
-    } finally {
-      setBusy(false);
-    }
-  }
-  function download(entry: { blob: Blob; filename: string } | null) {
-    if (!entry) return;
-    const url = URL.createObjectURL(entry.blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = entry.filename;
-    a.click();
-    URL.revokeObjectURL(url);
+  // What a downloaded report is built from. One click per format, built
+  // when asked for.
+  function reportParts() {
+    if (!data) throw new Error('nothing is loaded yet');
+    return { data: data.data, meta: data.meta, view: viewLabel, dateFrom: from, dateTo, paymentsNote };
   }
 
   const cardStyle: React.CSSProperties = { background: palette.surface, border: `1px solid ${palette.border}` };
@@ -255,6 +231,15 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
   // The server has not read invoices from AroFlo since it started — so there
   // are no totals to show yet, as opposed to totals of nil.
   const notLoaded = Boolean(data) && !data?.meta.lastFetchedAt;
+  const downloads = (
+    <ReportDownloads
+      palette={palette}
+      disabled={!data || notLoaded}
+      excel={async () => buildInvoicingExcel(reportParts())}
+      pdf={async () => buildInvoicingPdf(reportParts())}
+      what="Summary, By client, By status and the full invoice list, for the clients and dates chosen."
+    />
+  );
 
   return (
     <div className="space-y-6">
@@ -302,6 +287,7 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
           setDateTo(nextTo);
         }}
       />
+      {downloads}
       <p className="text-[12px]" style={{ color: palette.inkMuted }}>
         Date range filters on <b>Date Invoiced</b>. An invoice counts as paid when payments recorded against it in AroFlo
         add up to its total.
@@ -328,8 +314,9 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
             <b>Which month an invoice belongs to.</b> Its Date Invoiced. An invoice with no date yet is in no date range.
           </li>
           <li>
-            <b>Submitted</b> — invoices whose status is Approved or Processed. Drafts (Not Started, Pending Approval) are
-            not counted as submitted; they appear in “By status”.
+            <b>Submitted</b> — invoices whose status is Approved, In Progress or Processed: they have gone to the client.
+            The In Progress ones are counted in, and the Submitted tiles say how many and how much they are. Drafts (Not
+            Started, Pending Approval) are not counted as submitted; they appear in “By status”.
           </li>
           <li>
             <b>Submitted value</b> — the total including GST, with the ex-GST total beside it.
@@ -344,6 +331,10 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
           </li>
           <li>
             <b>How fresh.</b> As of the time in the bar at the top. Nothing updates until someone presses Refresh.
+          </li>
+          <li>
+            <b>Whose clock.</b> {zoneName()} time. “Today”, “this month” and every date on the page are {zoneName()}’s,
+            wherever the page is opened from.
           </li>
         </ul>
       </details>
@@ -377,11 +368,21 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
 
           {k && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <KpiCard label="Submitted" value={k.submittedCount.toLocaleString()} pillText="invoices" level="neutral" palette={palette} />
+              <KpiCard
+                label="Submitted"
+                value={k.submittedCount.toLocaleString()}
+                pillText={k.inProgressCount ? `invoices · ${k.inProgressCount.toLocaleString()} in progress` : 'invoices'}
+                level="neutral"
+                palette={palette}
+              />
               <KpiCard
                 label="Submitted value"
                 value={money(k.submittedTotalInc)}
-                pillText={`inc GST · ${money(k.submittedTotalEx)} ex`}
+                pillText={
+                  k.inProgressCount
+                    ? `inc GST · ${money(k.submittedTotalEx)} ex · ${money(k.inProgressTotalInc ?? 0)} in progress`
+                    : `inc GST · ${money(k.submittedTotalEx)} ex`
+                }
                 level="neutral"
                 palette={palette}
               />
@@ -436,7 +437,7 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
             [
               { key: 'invoiceNumber', label: 'Invoice' },
               { key: 'client', label: 'Client' },
-              { key: 'clientBucket', label: 'Bucket', filter: 'choice' },
+              { key: 'clientBucket', label: 'Client group', filter: 'choice' },
               { key: 'status', label: 'Status', filter: 'choice' },
               { key: 'dateInvoiced', label: 'Date Invoiced', date: true },
               { key: 'dueDate', label: 'Due Date', date: true },
@@ -452,47 +453,20 @@ export const InvoicingTab: React.FC<Props> = ({ palette, striped, dataVersion = 
           {/* Export */}
           <div>
             <h2 className={h2} style={{ borderBottom: `1px solid ${palette.border}`, color: palette.inkPrimary }}>
-              Export
+              Download report
             </h2>
-            {exportError && (
-              <p className="text-[12px] mb-2" style={{ color: palette.statusCritical }}>
-                {exportError}
-              </p>
-            )}
-            <div className="flex items-center gap-3">
-              <button
-                onClick={prepare}
-                disabled={busy}
-                className="px-4 py-2 rounded-md text-[13px] font-semibold disabled:opacity-50"
-                style={{ background: palette.accentBlue, color: '#fff' }}
-              >
-                {busy ? 'Building…' : 'Prepare reports'}
-              </button>
-              {excelBlob && (
-                <button
-                  onClick={() => download(excelBlob)}
-                  className="px-4 py-2 rounded-md text-[13px] font-semibold"
-                  style={{ border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
-                >
-                  Download Excel
-                </button>
-              )}
-              {pdfBlob && (
-                <button
-                  onClick={() => download(pdfBlob)}
-                  className="px-4 py-2 rounded-md text-[13px] font-semibold"
-                  style={{ border: `1px solid ${palette.border}`, color: palette.inkPrimary }}
-                >
-                  Download PDF
-                </button>
-              )}
-            </div>
+            <p className="text-[12px] mb-3" style={{ color: palette.inkMuted }}>
+              The Excel and PDF reports hold the summary, By client, By status and every invoice in the list, for the
+              clients and dates chosen — whatever is filtered or sorted on screen. To save the invoice list exactly as it
+              is showing, use <b>Download CSV</b> above it.
+            </p>
+            {downloads}
           </div>
 
           <p className="text-[11px] pt-2" style={{ color: palette.inkMuted, borderTop: `1px solid ${palette.border}` }}>
             Source: AroFlo API
-            {data.meta.lastFetchedAt ? ` · data as of ${fmtDate(data.meta.lastFetchedAt.slice(0, 10))}` : ''} ·{' '}
-            {fmtDate(from)} – {fmtDate(dateTo)} · Generated {todayStr()}
+            {data.meta.lastFetchedAt ? ` · data as of ${fmtDate(dayOfInstant(data.meta.lastFetchedAt))}` : ''} ·{' '}
+            {fmtDate(from)} – {fmtDate(dateTo)} · Generated {fmtDate(todayStr())}
           </p>
         </>
       )}

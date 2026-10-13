@@ -6,6 +6,7 @@ import { KpiMatrixSection } from './kpiMatrix/KpiMatrixSection';
 import { AnalyticsTab } from './AnalyticsTab';
 import { InvoicingTab } from './invoicing/InvoicingTab';
 import { RefreshControl } from './components/RefreshControl';
+import { setReportTimeZone } from './time';
 
 type SubTab = 'matrix' | 'analytics' | 'invoicing';
 
@@ -18,10 +19,12 @@ function loadLocal<T>(key: string, fallback: T): T {
   }
 }
 
+// `label` is the page's name — the same words as its entry in the sidebar —
+// and `subtitle` says in a line what the page is for.
 const SUB_TABS: { id: SubTab; label: string; subtitle: string }[] = [
-  { id: 'matrix', label: 'KPI Matrix', subtitle: 'Client SLA compliance template — from the AroFlo API, or an uploaded task export (CSV)' },
-  { id: 'analytics', label: 'Work Orders', subtitle: 'Work-order analytics from the AroFlo API' },
-  { id: 'invoicing', label: 'Invoicing', subtitle: 'Invoiced / paid / outstanding by client, from the AroFlo API' },
+  { id: 'matrix', label: 'KPI Matrix', subtitle: 'Compliance against the contract KPI targets, month by month' },
+  { id: 'analytics', label: 'Work Orders', subtitle: 'Work orders issued, completed and overdue, with the breakdown by priority' },
+  { id: 'invoicing', label: 'Invoicing', subtitle: 'Invoices submitted, paid and unpaid, by client' },
 ];
 
 interface Props {
@@ -77,7 +80,13 @@ export const ReportingDashboardView: React.FC<Props> = ({
   const isDark = resolveIsDark(themeMode);
 
   useEffect(() => {
-    fetchReportingConfig().then(setConfig).catch((e) => setConfigError(e.message));
+    fetchReportingConfig()
+      .then((c) => {
+        // Before any pane is shown: they work out "today" as they open.
+        setReportTimeZone(c.timeZone);
+        setConfig(c);
+      })
+      .catch((e) => setConfigError(e.message));
   }, []);
   useEffect(() => {
     localStorage.setItem('reporting-theme', JSON.stringify(themeMode));
@@ -93,9 +102,17 @@ export const ReportingDashboardView: React.FC<Props> = ({
       <div className="p-8 space-y-6">
         {/* Header */}
         <div className="flex flex-wrap items-baseline justify-between gap-3 pb-3" style={{ borderBottom: `1px solid ${palette.border}` }}>
+          {/* The page's own name is the heading, so each page says which one
+              it is. The report's overall title (KPI_REPORT_TITLE) sits over
+              it, small. */}
           <div>
+            {config?.reportTitle && (
+              <div className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: palette.inkMuted }}>
+                {config.reportTitle}
+              </div>
+            )}
             <h1 className="text-[1.6rem] font-bold" style={{ color: palette.inkPrimary }}>
-              {config?.reportTitle || 'Reports'}
+              {active.label}
             </h1>
             <div className="text-[0.95rem]" style={{ color: palette.inkSecondary }}>
               {active.subtitle}
@@ -155,9 +172,10 @@ export const ReportingDashboardView: React.FC<Props> = ({
           </p>
         ) : (
           <>
-            {/* Both of these open on the contract's clients, which come
-                from the config — so they wait for it (or for it to fail). */}
-            {subTab !== 'invoicing' && !config && !configError && (
+            {/* The panes wait for the config (or for it to fail): it says
+                which clients the first two open on, and which time zone
+                "today" is in for all three. */}
+            {!config && !configError && (
               <p className="text-[13px]" style={{ color: palette.inkMuted }}>
                 Loading…
               </p>
@@ -168,13 +186,13 @@ export const ReportingDashboardView: React.FC<Props> = ({
                 striped={striped}
                 dataVersion={dataVersion}
                 coverageFrom={coverageFrom}
-                defaultClients={config ? Object.keys(config.targetClients) : []}
+                targetClients={config ? config.targetClients : undefined}
               />
             )}
             {subTab === 'analytics' && (config || configError) && (
               <AnalyticsTab palette={palette} striped={striped} config={config} dataVersion={dataVersion} coverageFrom={coverageFrom} />
             )}
-            {subTab === 'invoicing' && (
+            {subTab === 'invoicing' && (config || configError) && (
               <InvoicingTab palette={palette} striped={striped} dataVersion={dataVersion} coverageFrom={coverageFrom} />
             )}
           </>

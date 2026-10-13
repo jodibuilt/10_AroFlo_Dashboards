@@ -21,12 +21,15 @@ Object.assign(process.env, {
 
 const { normalizeTask, normalizeInvoice, normalizePayment } = require('../src/normalize');
 const { normalizePriority } = require('../src/priorities');
+const { zonedNow } = require('../src/time');
 
 const pad = (n) => String(n).padStart(2, '0');
 
 // A date `offset` days from today, the way AroFlo writes one: YYYY/MM/DD.
+// Today in Adelaide, as the reports take it — not this machine's today, or
+// the tests would only pass on a machine set to Adelaide time.
 function day(offset = 0) {
-  const d = new Date();
+  const d = zonedNow();
   d.setDate(d.getDate() + offset);
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
 }
@@ -100,4 +103,4 @@ function cacheOf({ jobs = [], invoices = [], payments = [], priorities = PRIORIT
   return { get: (key) => state[key] };
 }
 
-module.exports = { day, rawTask, task, invoice, payment, cacheOf, PRIORITY_MAP };
+module.exports = { day, rawTask, task, invoice, payment, cacheOf, PRIORITY_MAP, now: zonedNow };

@@ -54,8 +54,9 @@ that file carries existing edits across.
 
 The reporting brief, item by item. "Contract clients" are Ventia and SAHA
 (`KPI_TARGET_CLIENTS_JSON`); Work Orders and the KPI Matrix open on the two
-together — the grouped total — and the client filter gives either alone, or
-everyone in AroFlo.
+together — the grouped total. The client filter is the same three groups on
+every dashboard: Ventia, SAHA, and Projects / Other (every other company
+taken together). Nothing ticked is everyone.
 
 | Asked for | Where | Notes |
 |---|---|---|
@@ -64,15 +65,15 @@ everyone in AroFlo.
 | Start date v Requested date | Requested Date and Actual Start Date columns | Start = first labour entry logged on the job |
 | Completed date v Required completed date | Required Completed Date, Completed Date and Days Late columns | Required = the job's due date in AroFlo |
 | Late because of materials or access | Delay Reason and Substatus columns; KPI Matrix "Comments" | Late jobs only: the current substatus if it is Non Access, Materials Ordered, On Hold/Materials Required or Sent to Procurement, otherwise a keyword match in the job's notes, marked "(from notes)". **It explains a late job; it does not excuse it — the figures count it as late either way.** The Matrix comments are read from the job description |
-| Preventative maintenance: P5s and PMs, same columns | Work Orders → Preventative Maintenance (P5 / PM) | AP5 is P5; SM is counted as PM |
+| Preventative maintenance, same columns | Work Orders → Preventative Maintenance (PM) | AP5 is counted with P4, so SAHA's AP5 jobs are on the P4/P5 tab of the breakdown above, not here |
 | Work orders issued for the month | General Statistics → Issued | By requested date |
 | Work orders completed for the month | General Statistics → Completed | Of those issued in the range, the ones now Completed / Archived |
 | Work orders overdue for the month | General Statistics → Overdue | Open past due, or finished late |
 | Work orders outstanding in the system | General Statistics → Outstanding, "open in system" beneath it | Outstanding is for the range; "open in system" is every loaded open job — back to the first day covered, no further |
-| Completion rate, overdue rate | General Statistics | Overdue rate is overdue ÷ completed |
+| Completion rate, overdue rate | General Statistics | Overdue rate is shown both ways, each tile saying which: overdue ÷ issued, and overdue ÷ completed |
 | KPI targets P1 98, P2 95, P3 90, P4 90, PM 90 | Work Orders → Target KPI Compliance; KPI Matrix rows 1–10 | `KPI_REPORTING_PRIORITY_TARGETS_JSON` |
-| The 14-row KPI template (No., %, comments) | KPI Matrix, and its Excel export | Rows 12–14 need a CSV upload: AroFlo's API has no invoice-to-job link, checklists or compliance forms |
-| Number of invoices submitted | Invoicing → Submitted | Status Approved or Processed |
+| The 14-row KPI template (No., %, comments) | KPI Matrix, and its Excel and PDF | Rows 12–14 are left blank, and say so, until a CSV export is uploaded: AroFlo's API has no invoice-to-job link, checklists or compliance forms |
+| Number of invoices submitted | Invoicing → Submitted | Status Approved, In Progress or Processed. In Progress has gone to the client, so it counts; the tile says how many are in progress |
 | Value of invoices submitted | Invoicing → Submitted value | Inc GST, ex GST beside it |
 | Split by Ventia, SAHA, Projects/Other | Invoicing → By client, and the client filter | By the client name on the invoice |
 
@@ -98,6 +99,24 @@ list and the Matrix's late jobs — all work the same way:
 
 Sorting and filtering are for looking at a table. The tiles, charts and the
 Excel / PDF reports are worked out from every row whatever is filtered.
+
+### Downloading
+
+Everything on the report pages can be taken away as a file.
+
+| What | Where | Holds |
+|---|---|---|
+| Work Orders report — Excel, PDF | "Download report" under the date pickers, and again at the foot of the page | General Statistics (with open in system), Target KPI Compliance, both breakdown tables in full, the Overdue & Ageing summary and list, notes on what the figures cover; the PDF also has the charts |
+| Invoicing report — Excel, PDF | the same two places on Invoicing | Summary, By client, By status, every invoice in the range |
+| KPI Matrix — Excel, PDF | "Download report" beside the month and tier filters | the 14-row matrix, the late jobs behind it, notes |
+| Any long table — CSV | "Download CSV" above the table | that table exactly as it is showing: filters, sort and any on-screen edits applied |
+
+One click each; the file is built and saved straight away, for the clients
+and dates chosen. A table that has been edited on screen with the pencil goes
+into the Excel and PDF as edited — changed cells, added rows, added columns —
+and the report's notes say which tables were. (General Statistics are never
+editable, so are always as loaded.) A filter or a sort on a table changes
+nothing in the reports; the CSV is the one that follows what is showing.
 
 ## Is the data right?
 
@@ -136,6 +155,23 @@ before that day is in any figure. The bar at the top of each report says
 which day. In particular **Overdue & Ageing counts only open jobs requested
 since then**; an older job that is still open is not in it.
 
+### Adelaide time
+
+The reports run on **Adelaide time** (`REPORT_TIME_ZONE`, default
+`Australia/Adelaide`) — not on the clock of the machine the server runs on,
+and not on each person's browser. That decides:
+
+- what day **today** is: which jobs are overdue, how many days late, where
+  "this month" starts, and the first day the data is loaded from;
+- the **times shown** ("AroFlo data as of 13 Oct, 8:30 am ACDT");
+- the **date stamped** on an Excel or PDF report and in its file name.
+
+So a server hosted on UTC, or someone opening the page from Manila or
+Darwin, gets the same figures and the same dates as someone in Adelaide.
+AroFlo's own dates are shown as AroFlo sends them. `src/time.js` and
+`frontend/src/reporting/time.ts` are the two places this is done; the tests
+re-run every report on machines set to UTC, Honolulu and London.
+
 ### Definitions worth knowing
 
 - A work order belongs to the month it was **requested** in. "Issued",
@@ -147,12 +183,16 @@ since then**; an older job that is still open is not in it.
   every loaded work order for the chosen clients that isn't completed.
 - **Overdue** (statistics tiles, compliance) = open and past its due date,
   *or* finished after its due date. **Overdue & Ageing** is open jobs only.
-- **Overdue rate** = overdue ÷ completed, as in the earlier dashboard. It can
-  pass 100% when few jobs in the range are finished yet.
-- **Target KPI Compliance** = share of a level's work orders that are not
-  overdue. A job that is open and not yet due counts as on time.
-- **Level 5** (AP5) has no SLA target, so it is in no compliance row; it is
-  listed under "P5 / PM". The KPI Matrix puts it in the 30-day P4 tier.
+- **Overdue rate** is given both ways, each tile saying which: overdue ÷
+  issued, and overdue ÷ completed (as in the earlier dashboard). The second
+  can pass 100% when few jobs in the range are finished yet.
+- **Target KPI Compliance** = on time ÷ (on time + late), for each level.
+  A job that is open and not yet due is **in progress**: counted in its own
+  column, and in neither side of the percentage. A level with nothing
+  finished or overdue yet has no percentage, and reads "In progress".
+- **AP5 is counted with P4**: the same 30-day window and the same 90%
+  target, on both pages. A group that holds AP5 jobs is headed "P4/P5"; each
+  breakdown table has a Priority column with the job's own.
 - **Delay Reason** is given for late work orders only, from the two places
   AroFlo can hold one. First the job's **current substatus**, when it is
   Non Access, Materials Ordered, On Hold/Materials Required or Sent to
@@ -165,44 +205,49 @@ since then**; an older job that is still open is not in it.
   reason changes no figure — a late job counts as late whatever the cause.
 - **Paid** = payments recorded against the invoice add up to its total.
 
-### Why the two pages agree, and where they don't
+### Why the two pages agree
 
 Work Orders and the KPI Matrix use one rule for a late work order: **finished
 after its due date, or still open past it**, judged by day (finished any time
-on the due date is on time), with "finished" taken from the status. So for
-the same clients and the same month, the **Late** count on a Matrix
-"Completed" row is that priority's overdue count on Work Orders.
+on the due date is on time), with "finished" taken from the status. The due
+date on the job in AroFlo is the deadline.
 
-They are not the same report, and three things differ on purpose:
+So for the same clients and the same month, a Matrix "Completed" row and
+that priority's line under Target KPI Compliance on Work Orders show the
+same three counts — on time, late, in progress — and the same percentage, on
+time ÷ (on time + late). A late job is listed with the same number of days
+late on both pages.
 
-- **The percentage.** Work Orders' Target KPI Compliance is "not overdue ÷
-  all work orders", so a job that is open and not yet due counts as on time.
-  The Matrix's On time % is "on time ÷ jobs whose outcome is known" — it
-  leaves that job out until it is finished or overdue. While work is in
-  progress the Matrix reads lower; once every job in the month is finished
-  or overdue the two are equal.
-- **Commenced.** The Matrix also scores when a job was started (first labour
-  entry against the tier's response window). Work Orders has no such
-  measure, so a job can be in the Matrix's "Late jobs" for starting late
-  without being overdue.
-- **Level 5.** AP5 jobs are in the Matrix's P4 row; on Work Orders they are
-  P5, with no compliance row.
+The Matrix has one thing Work Orders does not: **Commenced**, whether a job
+was started in time. AroFlo's substatus says where a job is now, not when it
+got there, so this is read as follows (`reporting/kpiMatrix/ingest.ts`):
+
+- *started* = finished, In Progress, or a substatus of Materials Ordered, On
+  Hold/Materials Required, Sent to Procurement, Non Access, Ready for
+  Invoicing, To be Reviewed, Re-book or Job Cancelled;
+- *late to start* = still not started once the priority's time limit has
+  passed (P1 the same day if requested before 1 pm, otherwise the next day;
+  P2 3 days; P3 14; P4/AP5 and PM 30);
+- a job that has been started counts as on time, because nothing records
+  when it began — so Commenced percentages lean generous;
+- not started and still inside the limit is in progress.
+
+A job can therefore be in the Matrix's "Late jobs" for starting late without
+being overdue; the list's **Late for** column says which it was. With an
+uploaded CSV the Matrix works as the original spec has it, from the export's
+own start dates.
 
 The `Data check` log line splits the late work orders into "finished after
-its due date" and "still open past its due date".
+its due date" and "still open past its due date". Both pages state the late
+rule in one line under their filters (`reporting/components/LateRuleNote.tsx`).
 
-**The rule is an assumption, and both pages say so.** Work Orders and the KPI
-Matrix each carry the same note (`reporting/components/LateRuleNote.tsx`)
-stating the rule and the two points to confirm with the people the report is
-for:
+### Still to be confirmed
 
-1. Should a job that is still open past its due date count as late now, or
-   only once it has been finished? It matters: on the TTS account on
-   2026-10-12, 325 of the 409 late work orders loaded were still open and 84
-   had been finished late.
-2. Should the time of day on a due date count? Lateness is judged by day,
-   and 1,677 of the 2,967 work orders loaded had a due date with a time of
-   day on it.
+The rules above were confirmed by the business on 13 October 2026, bar one:
+whether the P1–P4 time limits for *starting* a job are the contracts' own.
+**[docs/to-confirm.md](docs/to-confirm.md)** has that question, how Commenced
+works in plain words, notes for whoever runs the dashboards, and the table
+of what was confirmed.
 
 ## AroFlo's daily request allowance
 
@@ -231,8 +276,100 @@ which is how it notices the allowance has reset.
 
 ## Deploy to Azure App Service
 
-A single always-on Linux App Service running Node. The package is built here
-and deployed as-is — Azure runs no build step.
+One always-on Linux App Service running Node. The package is built here and
+deployed as-is — Azure runs no build step.
+
+### What it needs
+
+Measured on 13 October 2026 by booting the deployment package itself on Node
+24 against a stand-in for AroFlo holding what the TTS account holds (3,000
+work orders with notes, 3,200 invoices, 2,988 payments):
+
+| | Measured | B1 gives |
+|---|---|---|
+| Memory, data loaded | 93 MB | 1.75 GB |
+| Memory, worst case — a refresh landing while reports are reloaded in a loop | 426 MB peak | 1.75 GB |
+| CPU for a refresh | 1.6 s of CPU over the 50 s it takes (it is paced at one AroFlo request a second) | 1 core |
+| CPU for a report | about 35 ms each; 10–75 ms to answer one visitor | 1 core |
+| 20 people opening every report at once | all answered, half within 0.4 s, the slowest in 1.6 s | — |
+| Disk | 15 MB of code (a 3.8 MB zip), two database files of 20 KB | 10 GB |
+| Start-up | under a second | — |
+
+Those times are from a desktop PC; a B1 core is slower, so allow two to three
+times as long. With three people using it that is still well inside one
+**B1** (1 core, 1.75 GB): the smallest plan that has **Always On**, which
+this app needs because the loaded AroFlo data lives in memory. On the Free
+plan the app is unloaded after about twenty idle minutes, and every visit
+would then start with a Refresh — 47 requests from the shared AroFlo
+allowance each time.
+
+| Resource | Setting | About, per month |
+|---|---|---|
+| Resource group | `rg-tts-integrations` (exists, Australia East) | — |
+| App Service plan | Linux, **B1**, one instance | A$20 |
+| Web app | Node 24 LTS, Always On, HTTPS only | on the plan |
+| Storage | the plan's own `/home` share, for the two database files | on the plan |
+| Outbound data | a few hundred MB at most; the first 100 GB is free | A$0 |
+
+The price is Azure's list price for Australia East, before GST, read on 13
+October 2026 (B1 Linux A$0.0271 an hour). The next size up, B2, is A$38;
+nothing measured suggests needing it. There is no database server, no
+storage account and no Application Insights to pay for.
+
+Go up a size only if the plan's memory stays above about 1.2 GB or its CPU
+above 70% for long stretches (App Service plan → Metrics). Neither is near.
+
+### The short way
+
+`scripts\deploy-azure.ps1` does steps 1 to 4 below. The first deploy and
+every later one are the same command.
+
+```powershell
+.\scripts\deploy-azure.ps1 -InitSettings   # once: writes deploy\appsettings.json
+.\scripts\deploy-azure.ps1 -Check          # changes nothing; says what a deploy would do
+.\scripts\deploy-azure.ps1                 # creates what is missing, deploys, waits for /healthz
+```
+
+- **`-InitSettings`** builds `deploy\appsettings.json` (git-ignored) from
+  the local `.env`: the AroFlo login and any report settings changed
+  locally come across, the settings that differ on App Service are set for
+  it, and it makes a new 24-character admin password — which is in the file,
+  and is what you sign in to the deployed site with. Only the settings this
+  app reads (`.env.example`) are taken; anything else in `.env` stays put.
+  No value is printed, only names. If `AROFLO_HOST_IP` is set locally it
+  says so and leaves it out.
+- **Before touching Azure** it checks the settings file: no placeholder
+  left, an admin password of 12 characters or more, a secure cookie, the
+  databases under `/home`, no `PORT`. It stops if any of that is wrong.
+- **It creates the plan and the web app only if they are not there**, so
+  running it again is just a redeploy. Other names or a different size:
+  `-Plan`, `-App`, `-ResourceGroup`, `-Sku`.
+
+**Or keep the secrets out of files altogether** — this is how the site was
+first deployed, on 13 October 2026:
+
+```powershell
+.\scripts\deploy-azure.ps1 -SettingsInPortal
+```
+
+No settings file is used. The script applies the plain settings from
+`deploy\appsettings.example.json` (only the ones the app does not have yet,
+so a value changed in the portal later is left alone), and these six are
+added by hand in the Azure portal, under the web app's **Settings →
+Environment variables → App settings**:
+
+| Setting | What goes in it |
+|---|---|
+| `AROFLO_SECRET_KEY`, `AROFLO_UENCODED`, `AROFLO_PENCODED`, `AROFLO_ORG_ENCODED` | the AroFlo API login, as in the local `.env` |
+| `ADMIN_USERNAME` | the admin's sign-in name |
+| `ADMIN_PASSWORD` | 12 characters or more — not the local one |
+
+The app does not start until they are there, and the script says so
+instead of waiting for it. Pressing **Apply** in the portal restarts the
+app with them. Later deploys are the same command; once the six are in
+place it waits for `/healthz` as usual.
+
+The steps it runs, for doing them by hand or seeing what it did:
 
 ### 1. Create the resources (once)
 
@@ -245,10 +382,14 @@ $PLAN = "plan-aroflo-dashboards-prod"
 $APP  = "app-aroflo-dashboards-tts-prod"
 
 az appservice plan create -g $RG -n $PLAN --is-linux --sku B1 --location australiaeast
-az webapp create -g $RG -p $PLAN -n $APP --runtime "NODE:22-lts"
+az webapp create -g $RG -p $PLAN -n $APP --runtime "NODE:24-lts"
 az webapp update -g $RG -n $APP --https-only true
 az webapp config set -g $RG -n $APP --startup-file "node src/server.js" --always-on true --min-tls-version 1.2 --ftps-state Disabled
+az webapp log config -g $RG -n $APP --docker-container-logging filesystem
 ```
+
+Node 24 is supported by Azure until April 2028; the tests also pass on Node
+22, whose support ends April 2027.
 
 Keep it at **one instance**. The AroFlo cache lives in memory and the SQLite
 files allow one writer, so scaling out would give each instance its own view.
@@ -258,20 +399,27 @@ files allow one writer, so scaling out would give each instance its own view.
 ```powershell
 Copy-Item deploy\appsettings.example.json deploy\appsettings.json   # git-ignored
 # fill in deploy\appsettings.json, then:
-az webapp config appsettings set -g $RG -n $APP --settings "@deploy/appsettings.json"
+az webapp config appsettings set -g $RG -n $APP --settings "@deploy/appsettings.json" -o none
 ```
 
-What the non-obvious ones are for:
+`-o none` keeps az from echoing the settings back to the screen. What the
+non-obvious ones are for:
 
 - `AUTH_DB_PATH`, `APP_DB_PATH` → under `/home/data`. Only `/home` survives a
   redeploy; the default relative `data/` sits inside the deployed code and is
   wiped each time, taking every account and saved edit with it.
 - `COOKIE_SECURE=true` → the session cookie is HTTPS-only.
-- `TZ`, `WEBSITE_TIME_ZONE` → "overdue" and "days late" are computed in local
-  time. Without these the app runs in UTC and those boundaries shift.
+- `REPORT_TIME_ZONE` → the reports' "today" and every time shown. It is the
+  default anyway; the app does not go by the server's clock, so `TZ` and
+  `WEBSITE_TIME_ZONE` are not needed.
+- `NODE_ENV=production` → an unexpected error answers with a plain "Internal
+  Server Error", not a stack trace.
 - `SCM_DO_BUILD_DURING_DEPLOYMENT=false` → the zip already contains
   `node_modules` and the built frontend.
 - Do **not** set `PORT`. App Service supplies it.
+- `AROFLO_HOST_IP` → only if it is set in the `.env` used locally. It names
+  the machine AroFlo expects requests from, which on Azure is a different
+  address (`az webapp show -g $RG -n $APP --query outboundIpAddresses`).
 
 ### 3. Package and deploy
 
@@ -293,22 +441,32 @@ curl.exe "https://$SITE/healthz"     # {"ok":true}
 az webapp log tail -g $RG -n $APP
 ```
 
-In the log, look for `Refreshed Tasks`, `Refreshed Invoices` and
-`Refreshed Payments` with real counts. `Failed to refresh … Authentication
-Failed` means the AroFlo credentials in the app settings are wrong or revoked.
-Then sign in and open Work Orders.
+1. The log says `AroFlo Dashboards listening on …`.
+2. Sign in at `https://$SITE`. Signing in writes to the database under
+   `/home/data`, so it proves that storage works too.
+3. Press **Refresh from AroFlo**. Nothing is loaded until someone does —
+   after this deploy and after every later one or restart.
+4. In the log, `Refreshed Tasks`, `Refreshed Invoices` and `Refreshed
+   Payments` with real counts, then `AroFlo requests left today` and the
+   `Data check` line. `Failed to refresh … Authentication Failed` means the
+   AroFlo credentials in the app settings are wrong or revoked.
 
-Judge the deploy by `/healthz` and the log, not by the CLI's exit line. The
-earlier `test_all_aroflo` deploy printed "Site failed to start within 10 mins"
-while the app was in fact up.
+Judge the deploy by `/healthz` and the log, not by the CLI's exit line: it
+can print "Site failed to start within 10 mins" while the app is in fact up.
+
+Optional: in the portal, **Monitoring → Health check**, path `/healthz`.
+Azure then pings it every minute and reports if it stops answering.
 
 ### Before sharing the URL
 
 - Set a long random `ADMIN_PASSWORD`. The app logs a warning on every boot
   while it is shorter than 8 characters, but it will still start.
-- There is no sign-in throttling. If this stays on the public internet,
-  restrict who can reach it — App Service **Networking → Access restrictions**
+- Sign-in is limited: ten wrong passwords from one address and that address
+  waits 15 minutes (`src/loginThrottle.js`). That slows guessing; it is not
+  a reason for a short password. To close the site to everyone outside the
+  business as well, use App Service **Networking → Access restrictions**
   (office IPs), or **Authentication** with Microsoft Entra in front.
+- Create the two managers' accounts under Settings → Manage users.
 
 ## Keeping in step with test_all_aroflo
 
@@ -394,11 +552,12 @@ These behaviours differ from the Reports tab in `test_all_aroflo`:
 
 - **Priorities are named by AroFlo, not by a table of ids.** Each refresh
   reads the account's own priority list (the `Priorities` zone), so a task's
-  priority shows under the name AroFlo gives it. The level on the P1–P5 / PM
-  scale is read from that name: `P2`, `AP2` and `Priority Level 2 - …` are
-  all level 2; `PM` and `SM` are both PM. A name that doesn't state a level
-  takes one from `KPI_PRIORITY_CODE_MAP_JSON`; anything else stays off the
-  scale and shows under its own name. The server log lists which names
+  priority shows under the name AroFlo gives it. The level on the P1–P4 / PM
+  scale is read from that name, and only from what it states: `P2`, `AP2`
+  and `Priority Level 2 - …` are all level 2; `AP5` is level 5, which is
+  reported as part of P4; `PM` is PM. A name that doesn't state a level
+  takes one from `KPI_PRIORITY_CODE_MAP_JSON`; anything else — `PHONECALL`,
+  `SM` — stays off the scale and shows under its own name. The server log lists which names
   landed on which level whenever the list changes
   (`AroFlo priorities by level`).
 - **KPI Matrix, Work Orders and Invoicing are sidebar items** under
@@ -420,15 +579,39 @@ These behaviours differ from the Reports tab in `test_all_aroflo`:
 - **Tables scroll.** A long breakdown table scrolls inside its box under a
   fixed header, like the other report tables, instead of running down the
   page.
-- **Priorities are listed up the scale** — P1 to P4, then P5 and PM — in the
+- **Priorities are listed up the scale** — P1 to P4, then PM — in the
   Overdue chart and its picker, not most jobs first.
 - **The long tables sort and filter by column**, and the date pickers have
   one-click month ranges (`reporting/components/tableControls.tsx`,
   `DatePresets.tsx` — see "Finding things in the tables").
-- **"Today" is the local day.** The date ranges took today's date in UTC,
-  which in Adelaide is still yesterday until mid-morning: until then the
-  default range stopped a day short and today couldn't be picked. Still so in
-  `test_all_aroflo`.
+- **Downloads are one click, and complete** (see "Downloading" above). In
+  `test_all_aroflo` a report is prepared first and downloaded second, the
+  Work Orders report leaves out the Overdue & Ageing section, the Matrix has
+  no PDF, and no table can be saved on its own. Its export note also says
+  on-screen edits are included in the reports; there they are not, and here
+  they now are.
+- **The sign-in screen** says what went wrong in plain words, warns when
+  Caps Lock is on, says who to ask about a forgotten password, and comes back
+  with "your session has ended" instead of leaving the reports answering
+  "Not signed in".
+- **The Refresh bar shows the load.** While AroFlo is being read it says
+  which of the four things it is on, with a progress bar; afterwards it says
+  "All data loaded" with the counts, or what is missing. It also says that a
+  refresh uses a daily allowance shared with other tools.
+- **One client filter everywhere:** Ventia, SAHA, Projects / Other.
+  `test_all_aroflo` lists every client in AroFlo on Work Orders.
+- **The icon font holds only the icons used** (24 KB, not 3.9 MB), so icons
+  don't show as words while it loads. A new icon has to be added to the
+  `icon_names` list in `frontend/index.html`.
+- **Each page is headed with its own name** (the words in the sidebar), with
+  the report title small above it; a new page opens at its top; the tables
+  are all headed the same way; "Sign out", not "Logout"; dates read
+  "13 Oct 2026" everywhere. Questions for the report's owner are in
+  `docs/to-confirm.md`, not on the pages.
+- **Everything is on Adelaide time** (see "Adelaide time" above). In
+  `test_all_aroflo` "today" is the server's own day for what is overdue, the
+  UTC day for the default date range and the date stamped on an export, and
+  the browser's zone for the times shown.
 - **Invoicing opens on this month to today**, like Work Orders. It used to
   reopen on the dates it was last left on, so a range saved last week kept
   ending last week and left out every invoice since, without saying so.

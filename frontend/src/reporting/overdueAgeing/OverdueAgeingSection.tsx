@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { Layout } from 'plotly.js';
 import { Plot, baseLayout, PLOT_CONFIG } from '../plotly';
-import { Palette } from '../theme';
+import { Palette, levelLabel } from '../theme';
 import { KpiCard, rateLevel } from '../components/KpiCard';
 import { OverdueAgeingResponse } from '../types';
 import { fetchOverdueAgeing } from '../../services/reportingOverdue';
 import { formatCoverage } from '../../services/reportingRefresh';
-import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, NoMatches, useTableControls } from '../components/tableControls';
+import { formatDay } from '../time';
+import { ariaSort, ColumnHeading, ControlColumn, ControlSummary, DownloadCsv, NoMatches, useTableControls } from '../components/tableControls';
 
 interface Props {
   palette: Palette;
@@ -33,12 +34,7 @@ function bucketColor(key: string, palette: Palette): string {
   }
 }
 
-function fmtDate(v: string | null): string {
-  if (!v) return '';
-  const d = new Date(v.replace(/\//g, '-'));
-  if (isNaN(d.getTime())) return v;
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-}
+const fmtDate = (v: string | null): string => formatDay(v);
 
 type OverdueRow = OverdueAgeingResponse['data']['rows'][number];
 
@@ -111,7 +107,7 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view, 
         Overdue &amp; Ageing Work
       </h2>
       <p className="text-[12px] mb-3" style={{ color: palette.inkMuted }}>
-        Open work orders past their due date{data ? `, as of ${data.meta.today}` : ''}. Not affected by the date range
+        Open work orders past their due date{data ? `, as of ${fmtDate(data.meta.today)}` : ''}. Not affected by the date range
         above — this is “what’s outstanding right now”. Honours the client filter.
         {/* The one limit on "right now": a job has to be loaded to be counted. */}
         {coverageFrom && ` Only work orders requested since ${formatCoverage(coverageFrom)} are loaded, so an older job that is still open is not counted here.`}
@@ -172,7 +168,7 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view, 
                         type: 'bar' as const,
                         orientation: 'h' as const,
                         name: label,
-                        y: d.byPriority.map((p) => p.priority),
+                        y: d.byPriority.map((p) => levelLabel(p.priority, data?.meta.levelLabels)),
                         x: d.byPriority.map((p) => Number(p[key] ?? 0)),
                         marker: { color: bucketColor(key, palette) },
                         hovertemplate: `%{y} · ${label}: %{x}<extra></extra>`,
@@ -241,12 +237,13 @@ export const OverdueAgeingSection: React.FC<Props> = ({ palette, striped, view, 
                     <option value="__all__">All ({d.rows.length})</option>
                     {priorities.map((p) => (
                       <option key={p} value={p}>
-                        {p}
+                        {levelLabel(p, data?.meta.levelLabels)}
                       </option>
                     ))}
                   </select>
                 </label>
                 <ControlSummary controls={controls} palette={palette} noun="work orders" />
+                <DownloadCsv controls={controls} palette={palette} name="overdue work orders" />
               </div>
               {/* The surface background is what makes the stripes show: striped
                   rows are the page colour, so on a bare page they vanish. */}

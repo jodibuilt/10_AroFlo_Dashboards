@@ -7,6 +7,9 @@ export interface AroFloStatus {
     string,
     { lastFetchedAt: string | null; count: number; error: string | null; warning?: string | null; isRefreshing: boolean }
   >;
+  // When the refresh now running (or the last one) began. A zone fetched
+  // since then has been loaded by it.
+  refreshStartedAt?: string | null;
   // Null until the first refresh since the server started.
   lastRefreshCompletedAt: string | null;
   // The first day the loaded data covers, YYYY/MM/DD. Work orders requested

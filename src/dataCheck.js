@@ -3,6 +3,7 @@ const logger = require('./logger');
 const kpi = require('./kpi');
 const { delayReasonFor, delayReasonSource } = require('./delayReason');
 const { invoiceClientBucket } = require('./views');
+const { zonedNow, dayOf } = require('./time');
 
 // After each refresh: one log entry describing what actually came back from
 // AroFlo, so "are the dashboards right?" can be answered from facts instead
@@ -45,11 +46,15 @@ function logDataCheck(cache) {
   const linked = payments.filter((p) => p.invoiceId);
   const paidInvoiceIds = new Set(linked.filter((p) => invoiceIds.has(p.invoiceId)).map((p) => p.invoiceId));
 
-  const late = jobs.map((t) => [t, kpi.computeDaysLate(t)]).filter(([, daysLate]) => daysLate > 0);
+  const today = zonedNow();
+  const late = jobs.map((t) => [t, kpi.computeDaysLate(t, today)]).filter(([, daysLate]) => daysLate > 0);
   const lateReasons = late.map(([t, daysLate]) => delayReasonFor(t, daysLate));
   const finished = (t) => config.completedTaskStatuses.includes(String(t.status || '').toLowerCase());
 
   logger.info('Data check', {
+    // The day the reports take as today, and the zone it is today in.
+    today: dayOf(today),
+    timeZone: config.timeZone,
     coveredFrom: cache.coverageFrom,
     workOrders: {
       count: jobs.length,
@@ -74,6 +79,11 @@ function logDataCheck(cache) {
       // was reopened, and a due time other than midnight is being ignored.
       finishedWithoutCompletedDate: jobs.filter((t) => finished(t) && !t.completedDate).length,
       openWithCompletedDate: jobs.filter((t) => !finished(t) && t.completedDate).length,
+      // Re-book and Job Cancelled are closed jobs (confirmed 2026-10-13), but
+      // "finished" still comes from the status. Above zero means jobs with
+      // one of those substatuses are being reported as open, and as overdue
+      // once past their due date.
+      closedSubstatusButOpen: jobs.filter((t) => !finished(t) && /^(re-?book|job cancelled)$/i.test(String(t.substatus || '').trim())).length,
       dueWithATimeOfDay: jobs.filter((t) => t.dueDateTime && !/ 00:00:00$/.test(t.dueDateTime) && / \d/.test(t.dueDateTime)).length,
       withDueDate: having(jobs, (t) => t.dueDate),
       withCompletedDate: having(jobs, (t) => t.completedDate),
