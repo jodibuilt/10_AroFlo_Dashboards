@@ -290,7 +290,7 @@ if (-not $up) {
 }
 
 Write-Host "`nDeployed: https://$site" -ForegroundColor Green
-Write-Host '  1. Sign in with ADMIN_USERNAME and the ADMIN_PASSWORD in the settings file.'
+Write-Host ('  1. Sign in with ADMIN_USERNAME and the ADMIN_PASSWORD ' + $(if ($SettingsInPortal) { 'set in the portal.' } else { 'in the settings file.' }))
 Write-Host '  2. Press "Refresh from AroFlo". Nothing is loaded until someone does, after every deploy or restart.'
 Write-Host "  3. Watch it arrive: az webapp log tail -g $ResourceGroup -n $App"
 Write-Host '  4. Add the two managers under Settings > Manage users.'

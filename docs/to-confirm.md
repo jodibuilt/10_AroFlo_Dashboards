@@ -49,6 +49,12 @@ the dashboards can tell *whether* a job has been started, not *when*:
 
 ## Notes for whoever runs it
 
+- **TTS RMS only.** Work orders and invoices owned by any other business
+  unit are dropped as they are loaded. The Refresh bar says how many were
+  left out, and the `Data check` log line lists what AroFlo sent for each
+  unit. If the bar instead says none belong to TTS RMS, the unit has a
+  different name in AroFlo: the bar lists the names that came, and the right
+  one goes in the `AROFLO_BUSINESS_UNITS` setting.
 - **Re-book and Job Cancelled** are treated as closed jobs, as confirmed.
   Whether a job counts as *finished* still comes from its status (Completed
   or Archived). The `Data check` line in the server log counts any job that
@@ -100,6 +106,7 @@ the dashboards can tell *whether* a job has been started, not *when*:
 | Quotes | Counted as work orders (they are in AroFlo's task list) |
 | How far back | Two months, and the pages say so |
 | Clients | Ventia, SAHA, Projects / Other on every dashboard; opens on Ventia + SAHA |
+| Business unit | TTS RMS only — no other business unit's work orders or invoices |
 | Invoices with status In Progress | Submitted — they have gone to the client — and shown as in progress |
 | A part-paid invoice | Counts as unpaid |
 | Invoice value | Including GST first |

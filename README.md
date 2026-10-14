@@ -118,6 +118,53 @@ and the report's notes say which tables were. (General Statistics are never
 editable, so are always as loaded.) A filter or a sort on a table changes
 nothing in the reports; the CSV is the one that follows what is showing.
 
+## Workloads
+
+A fourth page: the jobs booked to each field worker on a day, and how many of
+them are done. Built on 14 October 2026. The first run against the TTS
+account that day confirmed the bookings and the completions (74 bookings to
+19 people; AroFlo took both date filters). Reading the booked jobs' details
+several to a request was added after it and **has not yet been seen to work
+on the real account** — every update writes what AroFlo sent to the log
+(`Workload check`: counts and field names), which is where to look.
+
+- **Booked** — the job is in AroFlo's calendar for that worker on that day
+  (the Schedules zone). Booked to two people, it counts for each; booked to
+  one person twice in a day, once. Leave, meetings and bookings of equipment
+  are not jobs and are not counted.
+- **Completed** — marked Completed in AroFlo *on that day*. A job booked on
+  Monday and finished on Tuesday is ongoing on Monday's page and completed on
+  Tuesday's (confirmed 14 October 2026). One finished on a day it was not
+  booked is listed apart, with who last had it.
+- **It reads AroFlo only on "Update now"**: two requests — that day's
+  bookings, and the jobs completed since the day began. A booking names its
+  job only by id, so the first time a job turns up its number, client, site
+  and priority are read as well (25 jobs to a request) and kept on disk;
+  after that it is never asked for again. So a day's first update costs a
+  handful of requests and later ones two. It is separate from Refresh (49
+  requests), does not need Refresh to have been pressed, and like it never
+  runs on a timer. Opening the page, changing the day and the page's own
+  refreshing every few seconds ask only this app's server.
+- **Live in between, when AroFlo is set to push.** AroFlo's Event Messages
+  (Site Administration > Settings > General) can POST to this app when a
+  job is completed or the calendar changes, which costs no requests:
+  `/webhooks/aroflo/task-completed` and `/webhooks/aroflo/schedule-changed`,
+  each with `?token=` set to `WORKLOAD_WEBHOOK_SECRET`. A completion is
+  shown at once; a calendar change is flagged on the page ("press Update
+  now") rather than fetched. With no secret set those addresses answer 404.
+  AroFlo can only reach the deployed site, not a copy on a PC.
+- **TTS RMS only.** By the booking's own business unit: the TTS account's
+  bookings each carry one (on the first run, 13 of 74 were ttsBuilt's and
+  were left out). Were a booking ever to arrive without one, its job's unit
+  is used instead, and a booking that still can't be told either way is
+  kept and counted in a note on the page.
+- **Kept on disk** in the app database: a row a day (`workload_days`), so a
+  restart doesn't lose the day and past days can be looked back at, and a
+  row a job (`workload_jobs`) for the details read above.
+
+The code is `src/workload/` and `frontend/src/workload/`; `npm test` covers
+the counting rules, the business-unit limit and the messages from AroFlo.
+
 ## Is the data right?
 
 Three things answer that, in order of how often they are needed.
@@ -131,6 +178,7 @@ stops short of the daily allowance. It needs no AroFlo login.
 
 **The `Data check` line in the server log**, written after every refresh,
 describes what AroFlo actually sent: the dates covered, the statuses in use,
+how many records arrived for each business unit and were kept or left out,
 how many work orders have a due date / completed date / logged labour /
 notes, how many late ones got a delay reason and from where, how invoices
 fall into the client groups, and how many payments link to an invoice that
@@ -154,6 +202,38 @@ nothing about it, so the app always asks from a stated day — and nothing
 before that day is in any figure. The bar at the top of each report says
 which day. In particular **Overdue & Ageing counts only open jobs requested
 since then**; an older job that is still open is not in it.
+
+### TTS RMS only
+
+The reports are for one business unit: **TTS RMS** (`AROFLO_BUSINESS_UNITS`).
+The AroFlo login can see others, and AroFlo sends their work orders and
+invoices along with the rest. Each record names the unit that owns it, and
+any that is not TTS RMS's is dropped the moment it is loaded
+(`src/businessUnit.js`) — before anything is counted, listed or put in a
+download.
+
+How to know it worked, after any refresh:
+
+- **The Refresh bar** says "TTS RMS only" and how many work orders and
+  invoices were left out as other units'.
+- **The `Data check` log line** has `businessUnits`: what AroFlo sent for
+  each unit by name, how many were kept, how many left out.
+
+Two things it will not do quietly:
+
+- If the name matches **nothing** AroFlo sent — the unit is called something
+  else there — no work orders or invoices are shown, and the bar says so and
+  lists the unit names that did arrive. Put the right one in
+  `AROFLO_BUSINESS_UNITS`.
+- If AroFlo names **no owner at all** on a zone's records, they cannot be
+  limited; they are all kept and the bar says that they could not be.
+
+Names are compared on letters and digits, so "TTS - RMS" and "tts rms" are
+the same; "TTS RMS Projects" is a different unit. Payments are not limited:
+a payment only counts against an invoice that is held, so another unit's
+has nothing to count against. The other units' records are still fetched
+(AroFlo is not asked for one unit — no filter for it is known to work), so
+they still cost requests; they just go no further.
 
 ### Adelaide time
 

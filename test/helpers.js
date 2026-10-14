@@ -11,6 +11,7 @@ Object.assign(process.env, {
   KPI_DELAY_REASON_SUBSTATUSES: '',
   KPI_SUBMITTED_INVOICE_STATUSES: '',
   KPI_INVOICE_STATUS_ORDER: '',
+  AROFLO_BUSINESS_UNITS: '',
   REPORT_LOOKBACK_MONTHS: '2',
   // Small pages and no pauses, so the AroFlo tests are quick.
   PAGE_SIZE: '5',
@@ -53,9 +54,11 @@ let nextJob = 1000;
 // A raw Tasks-zone record, with AroFlo's own quirks: a blank date-time is a
 // single space, a date-only due is midnight. `notes` are the note texts,
 // oldest first.
-function rawTask({ client = 'Ventia', priority = 'id-p3', status = 'In Progress', substatus = '', notes = [], requested = day(-3), due = null, completed = null, started = null, job } = {}) {
+function rawTask({ client = 'Ventia', priority = 'id-p3', status = 'In Progress', substatus = '', notes = [], requested = day(-3), due = null, completed = null, started = null, job, businessUnit } = {}) {
   const n = job ?? nextJob++;
   return {
+    // The business unit that owns the job, when the test cares whose it is.
+    ...(businessUnit ? { org: { orgid: `id of ${businessUnit}`, orgname: businessUnit } } : {}),
     taskid: `internal-${n}==`,
     jobnumber: String(n),
     taskname: `Job ${n}`,
@@ -103,4 +106,43 @@ function cacheOf({ jobs = [], invoices = [], payments = [], priorities = PRIORIT
   return { get: (key) => state[key] };
 }
 
-module.exports = { day, rawTask, task, invoice, payment, cacheOf, PRIORITY_MAP, now: zonedNow };
+const quiet = { info() {}, warn() {}, error() {}, debug() {} };
+
+// A small stand-in for AroFlo that records what it is sent, with the real
+// client pointed at it. `reply(zone, request)` returns the records for a
+// request, or a whole response body to send instead.
+async function standIn(reply = () => []) {
+  const http = require('node:http');
+  const AroFloClient = require('../src/aroflo/AroFloClient');
+  const requests = [];
+  const headers = { 'x-ratelimit-daily-limit': '2000', 'x-ratelimit-daily-remaining': '1500' };
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://aroflo');
+    const zone = url.searchParams.get('zone') || '';
+    const request = {
+      method: req.method,
+      zone,
+      where: url.searchParams.getAll('where'),
+      join: url.searchParams.getAll('join'),
+      page: Number(url.searchParams.get('page')),
+    };
+    requests.push(request);
+    const result = reply(zone, request);
+    res.writeHead(200, { 'content-type': 'application/json', ...headers });
+    res.end(JSON.stringify(Array.isArray(result) ? { status: '0', statusmessage: '', zoneresponse: { [zone.toLowerCase()]: result } } : result));
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const client = new AroFloClient({
+    baseUrl: `http://127.0.0.1:${server.address().port}/`,
+    secretKey: 'not-a-real-key',
+    uEncoded: 'u',
+    pEncoded: 'p',
+    orgEncoded: 'o',
+    rateLimitPerSecond: 50,
+    rateLimitPerMinute: 1000,
+    logger: quiet,
+  });
+  return { client, requests, headers, close: () => new Promise((resolve) => server.close(resolve)) };
+}
+
+module.exports = { day, rawTask, task, invoice, payment, cacheOf, PRIORITY_MAP, now: zonedNow, standIn, quiet };

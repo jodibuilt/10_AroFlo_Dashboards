@@ -18,13 +18,14 @@ import './dark.css';
 const ReportingDashboardView = lazy(() =>
   import('./reporting/ReportingDashboardView').then((m) => ({ default: m.ReportingDashboardView }))
 );
+const WorkloadView = lazy(() => import('./workload/WorkloadView').then((m) => ({ default: m.WorkloadView })));
 const ToolsView = lazy(() => import('./tools/ToolsView').then((m) => ({ default: m.ToolsView })));
 
 // Every real NavigationTab value — used to validate the `?tab=` deep-link
 // query param below so an unrecognized value can't leave the app on a
 // blank screen (no currentTab === X branch would match it).
 const REPORT_TABS: ReportTab[] = ['matrix', 'analytics', 'invoicing'];
-const VALID_TABS: NavigationTab[] = [...REPORT_TABS, 'tools'];
+const VALID_TABS: NavigationTab[] = [...REPORT_TABS, 'workloads', 'tools'];
 const DEFAULT_TAB: NavigationTab = 'matrix';
 
 // The report panes were sub-tabs of a single "Reports" sidebar tab before
@@ -168,7 +169,9 @@ function DashboardsApp({ user, onLogout, themeMode, onThemeChange }: DashboardsA
               </div>
             }
           >
-            {currentTab !== 'tools' && <ReportingDashboardView tab={currentTab} themeMode={themeMode} />}
+            {currentTab !== 'tools' && currentTab !== 'workloads' && <ReportingDashboardView tab={currentTab} themeMode={themeMode} />}
+
+            {currentTab === 'workloads' && <WorkloadView themeMode={themeMode} />}
 
             {currentTab === 'tools' && <ToolsView hiddenSubTabs={navHidden.subTabs} isAdmin={isAdmin} />}
           </Suspense>

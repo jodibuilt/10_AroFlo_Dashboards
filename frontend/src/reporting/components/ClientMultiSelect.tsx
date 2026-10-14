@@ -47,13 +47,18 @@ interface Props {
   selected: string[];
   onChange: (next: string[]) => void;
   allLabel?: string;
+  // What is being picked, in the singular — the Workloads page picks
+  // workers with this same control.
+  noun?: string;
 }
 
 // Client filter that takes any number of clients: a button that reads like
 // the selects beside it, opening a checklist (with a search box once the
 // list is long). Don't nest it in a <label> — a click anywhere inside one is
 // forwarded to its first control, which here would be the button.
-export const ClientMultiSelect: React.FC<Props> = ({ palette, options, selected, onChange, allLabel = 'All clients' }) => {
+export const ClientMultiSelect: React.FC<Props> = ({ palette, options, selected, onChange, allLabel = 'All clients', noun = 'client' }) => {
+  const nouns = `${noun}s`;
+  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
@@ -79,7 +84,7 @@ export const ClientMultiSelect: React.FC<Props> = ({ palette, options, selected,
   // Named in the order the list shows them, not the order they were stored in.
   const listed = options.filter((o) => chosen.has(o.value)).map((o) => o.value);
   const picked = [...listed, ...selected.filter((v) => !listed.includes(v))];
-  const summary = picked.length === 0 ? allLabel : picked.length <= 2 ? picked.map(labelOf).join(', ') : `${picked.length} clients`;
+  const summary = picked.length === 0 ? allLabel : picked.length <= 2 ? picked.map(labelOf).join(', ') : `${picked.length} ${nouns}`;
   const shown = query ? options.filter((o) => o.label.toLowerCase().includes(query.trim().toLowerCase())) : options;
 
   function toggle(value: string) {
@@ -100,7 +105,7 @@ export const ClientMultiSelect: React.FC<Props> = ({ palette, options, selected,
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="true"
         aria-expanded={open}
-        aria-label={`Client filter: ${summary}`}
+        aria-label={`${Noun} filter: ${summary}`}
         title={picked.length > 2 ? picked.map(labelOf).join(', ') : undefined}
         className="w-full px-2 py-1.5 rounded-md text-[13px] text-left flex items-center justify-between gap-2"
         style={{ background: palette.surface, border: line, color: palette.inkPrimary }}
@@ -122,8 +127,8 @@ export const ClientMultiSelect: React.FC<Props> = ({ palette, options, selected,
                 autoFocus
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search clients…"
-                aria-label="Search clients"
+                placeholder={`Search ${nouns}…`}
+                aria-label={`Search ${nouns}`}
                 className="w-full px-2 py-1 rounded-md text-[12px]"
                 style={{ background: palette.pagePlane, border: line, color: palette.inkPrimary }}
               />
@@ -144,7 +149,7 @@ export const ClientMultiSelect: React.FC<Props> = ({ palette, options, selected,
             ))}
             {shown.length === 0 && (
               <div className="px-3 py-2 text-[12px]" style={{ color: palette.inkMuted }}>
-                No clients match “{query}”.
+                No {nouns} match “{query}”.
               </div>
             )}
           </div>

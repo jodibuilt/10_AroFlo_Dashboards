@@ -96,6 +96,9 @@ function normalizeTask(raw, priorities = new Map()) {
     customerOrderNumber: cleanStr(raw.custon),
     taskName: cleanStr(raw.taskname),
     client: cleanStr(raw.client?.clientname),
+    // The business unit that owns the job. The reports keep only the ones
+    // they are for (src/businessUnit.js).
+    businessUnit: cleanStr(raw.org?.orgname),
     status,
     substatus: cleanStr(raw.substatus?.substatus),
     dueDate,
@@ -137,6 +140,8 @@ function normalizeInvoice(raw) {
     invoiceId: raw.invoiceid,
     invoiceNumber: cleanStr(raw.invoicenumber),
     client: cleanStr(raw.client?.orgname),
+    // `org` is the business unit that raised it; `client`, above, who it is to.
+    businessUnit: cleanStr(raw.org?.orgname),
     status,
     deliveryStatus: cleanStr(raw.deliverystatus),
     dateInvoiced: cleanStr(raw.dateinvoiced) || null,

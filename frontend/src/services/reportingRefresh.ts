@@ -1,12 +1,34 @@
 import { apiFetch } from './api';
 
+// Whose records a zone was sent, and how many were kept: the server drops
+// work orders and invoices that belong to a business unit the reports are
+// not for (src/businessUnit.js). `count` on the zone is what was kept.
+export interface BusinessUnitSplit {
+  reportsAreFor: string[];
+  // By the business unit's name in AroFlo.
+  received: Record<string, number>;
+  kept: number;
+  leftOut: number;
+  // False when the zone could not be limited (AroFlo named no owner) or is not meant to be.
+  limited: boolean;
+}
+
 // GET /api/status — what the server currently holds from AroFlo.
 export interface AroFloStatus {
   // `error`: the last load failed. `warning`: it loaded, but not all of it.
   zones: Record<
     string,
-    { lastFetchedAt: string | null; count: number; error: string | null; warning?: string | null; isRefreshing: boolean }
+    {
+      lastFetchedAt: string | null;
+      count: number;
+      error: string | null;
+      warning?: string | null;
+      businessUnits?: BusinessUnitSplit | null;
+      isRefreshing: boolean;
+    }
   >;
+  // The business units the reports are for; "*" is all of them.
+  businessUnits?: string[];
   // When the refresh now running (or the last one) began. A zone fetched
   // since then has been loaded by it.
   refreshStartedAt?: string | null;

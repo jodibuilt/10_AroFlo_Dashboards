@@ -31,6 +31,22 @@ const config = {
     accept: process.env.AROFLO_ACCEPT || 'text/json',
     hostIp: process.env.AROFLO_HOST_IP || '',
   },
+  // The business units the reports are for, by the name AroFlo gives them.
+  // One login can see several; work orders and invoices owned by any other
+  // are dropped as they are loaded (src/businessUnit.js). Names are compared
+  // on letters and digits only, so "TTS - RMS" and "tts rms" are one name.
+  // "*" = every business unit the login can see.
+  businessUnits: parseList(process.env.AROFLO_BUSINESS_UNITS, ['TTS RMS']),
+  // The Workloads page (src/workload/).
+  workload: {
+    // The secret AroFlo's Event Messages carry (?token=…) when they POST to
+    // /webhooks/aroflo/…. Empty = that address answers 404 and the page
+    // moves only on "Update now".
+    webhookSecret: process.env.WORKLOAD_WEBHOOK_SECRET || '',
+    // Shortest gap between presses of "Update now", across all users. Each
+    // one spends two or three requests from the shared daily allowance.
+    minUpdateIntervalSeconds: Number(process.env.WORKLOAD_MIN_UPDATE_INTERVAL_SECONDS || 20),
+  },
   rateLimitPerSecond: Number(process.env.RATE_LIMIT_PER_SECOND || 1),
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE || 60),
   interZoneDelayMs: Number(process.env.INTER_ZONE_DELAY_MS || 750),

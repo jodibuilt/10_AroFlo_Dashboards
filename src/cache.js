@@ -6,6 +6,7 @@ const { normalizePriority } = require('./priorities');
 const { fetchPayments } = require('./payments');
 const { formatAroFloDate } = require('./aroflo/aroFloDates');
 const { zonedNow } = require('./time');
+const { businessUnitScope } = require('./businessUnit');
 
 // The first day the reports cover: the 1st of the month, `lookbackMonths`
 // before this one — the month it is in Adelaide (src/time.js), not on this
@@ -50,6 +51,8 @@ const ZONES = [
     normalize: normalizeTask,
     join: ['substatus,labour,notes'],
     where: () => [`and|daterequested|>=|${isoDay(coverageStart())}`],
+    // Only the business units the reports are for are kept (src/businessUnit.js).
+    businessUnitScoped: true,
   },
   {
     key: 'invoices',
@@ -58,6 +61,7 @@ const ZONES = [
     singularKey: 'invoice',
     normalize: normalizeInvoice,
     where: () => [`and|dateinvoiced|>=|${isoDay(coverageStart())}`],
+    businessUnitScoped: true,
   },
   {
     key: 'payments',
@@ -84,7 +88,9 @@ class DashboardCache {
     for (const zoneDef of ZONES) {
       // `warning` is for data that loaded but isn't all there (the page
       // limit was hit, a filter fell back); `error` for a load that failed.
-      this.state[zoneDef.key] = { records: [], lastFetchedAt: null, error: null, warning: null, isRefreshing: false };
+      // `businessUnits`: which units the zone's records came from and how
+      // many were kept; null for a zone that isn't limited to any.
+      this.state[zoneDef.key] = { records: [], lastFetchedAt: null, error: null, warning: null, businessUnits: null, isRefreshing: false };
     }
     this.lastRefreshCompletedAt = null;
     this.refreshStartedAt = null;
@@ -108,16 +114,37 @@ class DashboardCache {
           : fetched.warning || null;
       // Only the Tasks normalizer takes the second argument.
       const priorities = new Map(this.state.priorities.records.map((p) => [p.priorityId, p]));
+      let records = raw.map((r) => zoneDef.normalize(r, priorities));
+      // Another business unit's records go no further than this. `kept` is
+      // `raw` cut the same way, so the two stay side by side for
+      // logTaskPriorities.
+      let kept = raw;
+      let scope = null;
+      // The ids of the work orders left out as another unit's — nothing else
+      // about them. The Workloads page uses it to tell a booking for another
+      // unit's job from one for a job that simply isn't loaded.
+      let otherUnitTaskIds = [];
+      if (zoneDef.businessUnitScoped) {
+        scope = businessUnitScope(records);
+        kept = raw.filter((_, i) => scope.keep(records[i]));
+        if (zoneDef.key === 'jobs') otherUnitTaskIds = records.filter((r) => !scope.keep(r)).map((r) => r.taskId);
+        records = records.filter(scope.keep);
+      }
       this.state[zoneDef.key] = {
-        records: raw.map((r) => zoneDef.normalize(r, priorities)),
+        records,
         lastFetchedAt: new Date().toISOString(),
         error: null,
-        warning,
+        warning: [warning, scope && scope.warning].filter(Boolean).join('; ') || null,
+        businessUnits: scope ? scope.summary : null,
+        otherUnitTaskIds,
         isRefreshing: false,
       };
-      logger.info(`Refreshed ${zoneDef.zone}`, { count: raw.length });
+      logger.info(
+        `Refreshed ${zoneDef.zone}`,
+        scope && scope.summary.leftOut ? { count: records.length, leftOutAsOtherBusinessUnits: scope.summary.leftOut } : { count: records.length },
+      );
       if (zoneDef.key === 'priorities') this.logPriorityLevels();
-      if (zoneDef.key === 'jobs') this.logTaskPriorities(raw);
+      if (zoneDef.key === 'jobs') this.logTaskPriorities(kept);
     } catch (err) {
       logger.error(`Failed to refresh ${zoneDef.zone}`, { error: err.message });
       this.state[zoneDef.key] = {
@@ -255,11 +282,14 @@ class DashboardCache {
         count: s.records.length,
         error: s.error,
         warning: s.warning,
+        businessUnits: s.businessUnits || null,
         isRefreshing: s.isRefreshing,
       };
     }
     return {
       zones,
+      // The business units the reports are for ("*" = all of them).
+      businessUnits: config.businessUnits,
       refreshStartedAt: this.refreshStartedAt,
       lastRefreshCompletedAt: this.lastRefreshCompletedAt,
       coverageFrom: this.coverageFrom,

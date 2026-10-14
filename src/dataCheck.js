@@ -56,6 +56,14 @@ function logDataCheck(cache) {
     today: dayOf(today),
     timeZone: config.timeZone,
     coveredFrom: cache.coverageFrom,
+    // Whose records AroFlo sent, by business unit, and how many were kept:
+    // only the units the reports are for go any further (src/businessUnit.js).
+    // Everything below this is counted from what was kept.
+    businessUnits: {
+      reportsAreFor: config.businessUnits,
+      workOrders: cache.get('jobs').businessUnits || null,
+      invoices: cache.get('invoices').businessUnits || null,
+    },
     workOrders: {
       count: jobs.length,
       requested: span(jobs, (t) => t.requestDate),

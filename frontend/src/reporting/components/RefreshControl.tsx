@@ -139,6 +139,23 @@ export const RefreshControl: React.FC<Props> = ({ palette, onRefreshed, onCovera
     .map((s) => `${s.count.toLocaleString()} ${s.name.toLowerCase()}`)
     .join(' · ');
 
+  // Whose figures these are. The server keeps only the work orders and
+  // invoices of the business units the reports are for; this says which,
+  // and how many it left out as someone else's.
+  const units = (status?.businessUnits ?? []).filter((u) => u !== '*');
+  const scoped = ['jobs', 'invoices'].map((key) => ({ name: ZONE_NAMES[key].toLowerCase(), split: status?.zones[key]?.businessUnits ?? null }));
+  const limited = scoped.filter((z) => z.split?.limited);
+  const leftOut = limited.filter((z) => z.split!.leftOut > 0).map((z) => `${z.split!.leftOut.toLocaleString()} ${z.name}`);
+  let unitLine: string | null = null;
+  if (loaded && units.length > 0 && limited.length > 0) {
+    // A zone that could not be limited has a warning of its own below, so
+    // this names the ones that were.
+    const what = limited.length === scoped.length ? '' : ` (${limited.map((z) => z.name).join(', ')})`;
+    unitLine =
+      `${units.join(' + ')} only${what}. ` +
+      (leftOut.length ? `Left out, as belonging to other business units: ${leftOut.join(' · ')}.` : 'AroFlo sent nothing from any other business unit.');
+  }
+
   // The button keeps its place at the right of the bar however long the text
   // beside it gets — the text wraps, the button doesn't drop under it. Only
   // on a phone-width screen does it go on its own line.
@@ -186,6 +203,11 @@ export const RefreshControl: React.FC<Props> = ({ palette, onRefreshed, onCovera
         {!refreshing && loaded && (
           <div data-load-summary style={{ color: allLoaded ? palette.statusGood : palette.statusWarningText, fontWeight: 600 }}>
             {allLoaded ? `✓ All data loaded: ${counts}` : `Not everything loaded — see below. Have: ${counts}`}
+          </div>
+        )}
+        {!refreshing && unitLine && (
+          <div data-business-units style={{ color: palette.inkSecondary }}>
+            {unitLine}
           </div>
         )}
         <div style={{ color: palette.inkMuted }}>

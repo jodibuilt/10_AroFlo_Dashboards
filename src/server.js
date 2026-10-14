@@ -20,6 +20,8 @@ const { createAuthRouter } = require('./auth/routes');
 const { requireAuthApi, requireAdmin } = require('./auth/middleware');
 const { createLoginThrottle } = require('./loginThrottle');
 const { openDb: openAppDb } = require('./db');
+const { createWorkload } = require('./workload');
+const { sameSecret } = require('./workload/token');
 
 const authDb = openAuthDb();
 seedFirstAdmin(authDb);
@@ -42,6 +44,10 @@ const client = new AroFloClient({
 });
 
 const cache = new DashboardCache(client);
+
+// The Workloads page keeps its days in the app database, and reads AroFlo
+// through the same client — so it is read-only and counted the same way.
+const workload = createWorkload({ client, cache, db: appDb.raw, settings: appDb, logger });
 
 let lastManualRefreshAt = 0;
 
@@ -192,6 +198,58 @@ app.post('/api/refresh', requireApiAuth, async (req, res) => {
   lastManualRefreshAt = Date.now();
   res.json({ started: true });
   cache.refreshAll().then(() => logDataCheck(cache));
+});
+
+// Workloads: jobs booked to each field worker on a day, and how many are
+// done. A day is YYYY-MM-DD in the reports' time zone; today if none given.
+const WORKLOAD_DAY = /^\d{4}-\d{2}-\d{2}$/;
+function workloadDay(req, res) {
+  const day = req.query.day || workload.today();
+  if (!WORKLOAD_DAY.test(day) || Number.isNaN(Date.parse(`${day}T00:00:00Z`))) {
+    res.status(400).json({ error: 'day must be a date, YYYY-MM-DD' });
+    return null;
+  }
+  return day;
+}
+app.get('/api/workload', requireApiAuth, (req, res) => {
+  const day = workloadDay(req, res);
+  if (day) res.json(workload.view(day));
+});
+// The only thing that makes this page read AroFlo: someone pressing "Update
+// now". Answers straight away; the page watches GET /api/workload for it to
+// finish.
+app.post('/api/workload/update', requireApiAuth, (req, res) => {
+  const day = workloadDay(req, res);
+  if (!day) return;
+  const refused = workload.refusal();
+  if (refused) {
+    res.status(refused.status).json({ error: refused.message });
+    return;
+  }
+  res.json({ started: true });
+  workload.update(day);
+});
+
+// AroFlo's Event Messages arrive here: no session, so the secret in the
+// address is the only thing that lets one in. Switched off (404) until
+// WORKLOAD_WEBHOOK_SECRET is set. Answered at once — AroFlo isn't kept
+// waiting on what is done with it.
+app.post('/webhooks/aroflo/:kind', (req, res) => {
+  if (!config.workload.webhookSecret) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  if (!sameSecret(req.query.token, config.workload.webhookSecret)) {
+    logger.warn('Rejected event message: missing or wrong token', { ip: req.ip, kind: req.params.kind });
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  res.json({ received: true });
+  try {
+    workload.receive(req.params.kind, req.body);
+  } catch (err) {
+    logger.error('Could not take in an event message', { kind: req.params.kind, error: err.message });
+  }
 });
 
 // SPA fallback: any GET that isn't /api or /auth gets the app shell;

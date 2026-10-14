@@ -43,6 +43,7 @@ export const NAV_CATEGORIES: NavCategory[] = [
       { tab: 'matrix', label: 'KPI Matrix', icon: 'table_chart' },
       { tab: 'analytics', label: 'Work Orders', icon: 'analytics' },
       { tab: 'invoicing', label: 'Invoicing', icon: 'receipt_long' },
+      { tab: 'workloads', label: 'Workloads', icon: 'groups' },
     ],
   },
   {
