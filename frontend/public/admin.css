@@ -57,7 +57,11 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-.topbar-left { display: flex; align-items: baseline; gap: 12px; }
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+/* The TTS Built logo: dark lettering on the light bar, white on the dark one. */
+.topbar-left img { height: 22px; width: auto; display: block; }
+.brand-dark, .dash-dark .brand-light { display: none !important; }
+.dash-dark .brand-dark { display: block !important; }
 .topbar-left h1 { font-size: 20px; margin: 0; }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 

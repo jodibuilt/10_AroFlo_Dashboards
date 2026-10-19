@@ -66,6 +66,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSignedIn, notice = null 
     <div className="min-h-screen flex items-center justify-center bg-ink p-4">
       <main className="w-full max-w-sm">
         <div className="mb-6 text-center">
+          <img src="/img/tts-logo.svg" alt="TTS Built" width={140} height={32} className="h-8 w-auto mx-auto mb-4" />
           <div className="font-bold text-[24px] text-white">AroFlo Dashboards</div>
           <div className="text-[13px] text-white/70 mt-1">KPI Matrix, Work Orders and Invoicing reports, straight from AroFlo</div>
         </div>

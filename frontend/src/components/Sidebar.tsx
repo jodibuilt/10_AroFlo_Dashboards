@@ -146,6 +146,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="px-5 py-6 flex items-center justify-between border-b border-chrome-line">
           {!collapsed && (
             <div className="flex flex-col min-w-0">
+              <img src="/img/tts-logo.svg" alt="TTS Built" width={97} height={22} className="h-[22px] w-auto self-start mb-3" />
               <span className="font-sans text-[19px] font-bold text-white tracking-normal truncate">AroFlo Dashboards</span>
               <span className="font-sans text-[11px] font-semibold text-chrome-text uppercase tracking-widest truncate">
                 Reports &amp; Tools
@@ -153,9 +154,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           )}
           {collapsed && (
-            <div className="w-10 h-10 rounded-md bg-accent text-white font-bold text-[18px] flex items-center justify-center mx-auto shrink-0 shadow-sm">
-              AF
-            </div>
+            <img src="/img/dashboards-icon.svg" alt="TTS Built" width={40} height={40} className="w-10 h-10 mx-auto shrink-0" />
           )}
 
           {/* Desktop: collapse the rail. */}

@@ -46,6 +46,10 @@ const config = {
     // Shortest gap between presses of "Update now", across all users. Each
     // one spends two or three requests from the shared daily allowance.
     minUpdateIntervalSeconds: Number(process.env.WORKLOAD_MIN_UPDATE_INTERVAL_SECONDS || 20),
+    // How many days back the "Not done yet" tab looks for jobs scheduled to
+    // someone and not finished. Each day's calendar is read once (one
+    // request) and kept.
+    backlogDays: Math.max(1, Math.min(90, Number(process.env.WORKLOAD_BACKLOG_DAYS || 30))),
   },
   rateLimitPerSecond: Number(process.env.RATE_LIMIT_PER_SECOND || 1),
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE || 60),

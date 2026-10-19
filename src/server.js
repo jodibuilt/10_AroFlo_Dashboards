@@ -211,13 +211,17 @@ function workloadDay(req, res) {
   }
   return day;
 }
+// Opening the page on a new day also reads that day, once (loadIfNew in
+// src/workload/index.js); after that it only reads AroFlo when someone
+// presses "Update now".
 app.get('/api/workload', requireApiAuth, (req, res) => {
   const day = workloadDay(req, res);
-  if (day) res.json(workload.view(day));
+  if (!day) return;
+  workload.loadIfNew(day);
+  res.json(workload.view(day));
 });
-// The only thing that makes this page read AroFlo: someone pressing "Update
-// now". Answers straight away; the page watches GET /api/workload for it to
-// finish.
+// Someone pressing "Update now". Answers straight away; the page watches GET
+// /api/workload for it to finish.
 app.post('/api/workload/update', requireApiAuth, (req, res) => {
   const day = workloadDay(req, res);
   if (!day) return;

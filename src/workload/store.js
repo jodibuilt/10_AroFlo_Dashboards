@@ -10,9 +10,14 @@
 // It lives in the app's own database (APP_DB_PATH), beside the nav settings.
 //
 // Beside it, what has been learnt about each job, by task id: its number,
-// client, site and priority. A booking gives only the job's id and name, so
-// these are read from AroFlo the first time a job turns up — and kept, so
-// that is the only time.
+// client, site, priority, status and when it was finished — as of the last
+// time it was read.
+//
+// And each day's calendar on its own (`workload_schedule_days`), for the
+// "Not done yet" tab, which looks back over earlier days: who was booked to
+// which job. A day's calendar is read once on a later day and then kept —
+// it doesn't change once the day is over. `read_on` is the day (in the
+// reports' time zone) it was read on.
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS workload_days (
     day TEXT PRIMARY KEY,
@@ -23,6 +28,12 @@ const SCHEMA = `
     task_id TEXT PRIMARY KEY,
     data_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS workload_schedule_days (
+    day TEXT PRIMARY KEY,
+    bookings_json TEXT NOT NULL,
+    read_on TEXT NOT NULL,
+    read_at TEXT NOT NULL
   );
 `;
 
@@ -37,6 +48,8 @@ function emptyDay(day) {
     notes: [],
     businessUnits: null,
     bookings: [],
+    // On the calendar that day but not counted, each with why.
+    notCounted: [],
     completed: {},
     jobs: {},
     calendarChangedAt: null,
@@ -52,12 +65,25 @@ function openWorkloadStore(db) {
       INSERT INTO workload_days (day, data_json, updated_at) VALUES ($day, $json, $at)
       ON CONFLICT(day) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at
     `),
-    before: db.prepare('SELECT data_json FROM workload_days WHERE day < $day ORDER BY day DESC LIMIT $limit'),
-    getJob: db.prepare('SELECT data_json FROM workload_jobs WHERE task_id = $taskId'),
+    // Many at once: the ids as a JSON array (the page asks about a month of calendars' worth).
+    getJobs: db.prepare('SELECT task_id, data_json FROM workload_jobs WHERE task_id IN (SELECT value FROM json_each($ids))'),
     putJob: db.prepare(`
       INSERT INTO workload_jobs (task_id, data_json, updated_at) VALUES ($taskId, $json, $at)
       ON CONFLICT(task_id) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at
     `),
+    getSchedule: db.prepare('SELECT day, bookings_json, read_on FROM workload_schedule_days WHERE day = $day'),
+    putSchedule: db.prepare(`
+      INSERT INTO workload_schedule_days (day, bookings_json, read_on, read_at) VALUES ($day, $json, $readOn, $at)
+      ON CONFLICT(day) DO UPDATE SET bookings_json = excluded.bookings_json, read_on = excluded.read_on, read_at = excluded.read_at
+    `),
+    schedules: db.prepare('SELECT day, bookings_json, read_on FROM workload_schedule_days WHERE day >= $from AND day <= $to ORDER BY day'),
+  };
+  const scheduleOf = (row) => {
+    try {
+      return { day: row.day, bookings: JSON.parse(row.bookings_json), readOn: row.read_on };
+    } catch {
+      return null;
+    }
   };
   const parse = (row) => {
     try {
@@ -77,19 +103,15 @@ function openWorkloadStore(db) {
       stmts.put.run({ day: data.day, json: JSON.stringify(data), at: new Date().toISOString() });
     },
 
-    // The most recent stored days before `day`, newest first.
-    daysBefore(day, limit = 7) {
-      return stmts.before.all({ day, limit }).map(parse).filter(Boolean);
-    },
-
     // What is on record for these task ids, as a Map; ids nothing is known
     // about are simply not in it.
     getJobs(taskIds) {
       const jobs = new Map();
-      for (const taskId of taskIds) {
-        const row = stmts.getJob.get({ taskId });
-        const job = row && parse(row);
-        if (job) jobs.set(taskId, job);
+      const ids = [...new Set(taskIds)].filter(Boolean);
+      if (!ids.length) return jobs;
+      for (const row of stmts.getJobs.all({ ids: JSON.stringify(ids) })) {
+        const job = parse(row);
+        if (job) jobs.set(row.task_id, job);
       }
       return jobs;
     },
@@ -101,6 +123,21 @@ function openWorkloadStore(db) {
       for (const [taskId, job] of Object.entries(jobs)) {
         if (job && job.jobNumber) stmts.putJob.run({ taskId, json: JSON.stringify(job), at });
       }
+    },
+
+    // One day's calendar (YYYY-MM-DD): { day, bookings, readOn }, or null.
+    getSchedule(day) {
+      const row = stmts.getSchedule.get({ day });
+      return row ? scheduleOf(row) : null;
+    },
+
+    saveSchedule(day, bookings, readOn) {
+      stmts.putSchedule.run({ day, json: JSON.stringify(bookings), readOn, at: new Date().toISOString() });
+    },
+
+    // The calendars kept for `from` to `to` (both YYYY-MM-DD, inclusive), oldest first.
+    schedules(from, to) {
+      return stmts.schedules.all({ from, to }).map(scheduleOf).filter(Boolean);
     },
   };
 }

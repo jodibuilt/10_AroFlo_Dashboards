@@ -4,18 +4,18 @@ const { normalizePriority } = require('../priorities');
 const { plain, EVERY_UNIT } = require('../businessUnit');
 const { zonedNow, dayOf } = require('../time');
 const { openWorkloadStore } = require('./store');
-const { readDay } = require('./read');
+const { readDay, readEarlierDays } = require('./read');
 const { buildWorkloadDay } = require('./view');
 
 // The Workloads page: how many jobs each field worker is booked for on a
 // day, and how many of them are done.
 //
-// AroFlo is asked for a day only when someone presses "Update now" on the
-// page (update) — never on a timer, like everything else here: the daily
-// request allowance is shared with other tools. What keeps the page live in
-// between is AroFlo itself: its Event Messages can POST to this app the
-// moment a job is completed or the calendar changes (receive), which costs
-// no requests at all.
+// AroFlo is asked for a day when someone presses "Update now" on the page
+// (update), or when the page is first opened on a new day (loadIfNew) —
+// never on a timer, like everything else here: the daily request allowance
+// is shared with other tools. What keeps the page live in between is AroFlo
+// itself: its Event Messages POST to this app the moment a job is completed
+// (receive), which costs no requests at all.
 
 const clean = (v) => (v === null || v === undefined ? '' : String(v).trim());
 const pad = (n) => String(n).padStart(2, '0');
@@ -29,6 +29,12 @@ function instantOf(timestampUtc) {
   const m = /^(\d{4})[/-](\d{2})[/-](\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(clean(timestampUtc));
   if (!m) return new Date();
   return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)));
+}
+
+// A job as last read is still with the office to invoice, or finished.
+function stillDone(job) {
+  if (!job) return true; // nothing says otherwise
+  return [job.substatus, job.status].some((v) => plain(v).includes('invoic')) || config.completedTaskStatuses.includes(String(job.status || '').toLowerCase());
 }
 
 // `cache` is the reports' DashboardCache: where a booked job's details come
@@ -94,47 +100,80 @@ function createWorkload({ client, cache, db, settings, logger }) {
       const priorities = await priorityNames();
       const loadedJobs = new Map(cache.get('jobs').records.map((t) => [t.taskId, t]));
       const otherUnitJobs = new Set(cache.get('jobs').otherUnitTaskIds || []);
-      // What earlier updates learnt about jobs: every id on record is a job
-      // that needn't be asked for again. Which ids today's bookings name
-      // isn't known until they are read, so the reader is handed a lookup.
+      // What earlier updates learnt about jobs — what to show for one that
+      // can't be read this time. Which ids today's bookings name isn't known
+      // until they are read, so the reader is handed a lookup.
       const knownJobs = { get: (taskId) => store.getJobs([taskId]).get(taskId) };
       const read = await readDay(client, {
         day,
+        today: today(),
         priorities,
         knownJobs,
         loadedJobs,
         otherUnitJobs,
         completedFilter: settings.getSetting('workload_completed_filter', null),
         severalIds: settings.getSetting('workload_several_ids', null),
+        runningFilter: settings.getSetting('workload_running_filter', null),
       });
       if (read.completedFilter) settings.setSetting('workload_completed_filter', read.completedFilter);
       if (read.severalIds !== null) settings.setSetting('workload_several_ids', read.severalIds);
+      // False once AroFlo has been seen ignoring the running-into-the-day filter (read.js).
+      if (read.runningFilter !== null) settings.setSetting('workload_running_filter', read.runningFilter);
       store.saveJobs(read.learnt);
+      // The day's own calendar, kept with the others (it is read again on a later day).
+      store.saveSchedule(day, read.bookings, today());
+
+      // The days before, for the "Not done yet" tab. If that fails, the day
+      // itself, read above, is still kept, and the page says why.
+      let earlier;
+      try {
+        earlier = await readEarlierDays(client, {
+          day,
+          today: today(),
+          days: config.workload.backlogDays,
+          schedules: store,
+          knownJobs,
+          fresh: new Set(read.freshIds),
+          priorities,
+          several: settings.getSetting('workload_several_ids', null),
+          stop: () => cache.allowanceIsLow(),
+        });
+      } catch (err) {
+        logger.warn('Could not read the earlier days for Not done yet', { day, error: err.message });
+        earlier = { learnt: {}, severalIds: null, notes: [`Earlier days could not be read this time (${err.message}), so Not done yet is as of the last update.`], check: { error: err.message } };
+      }
+      if (earlier.severalIds !== null) settings.setSetting('workload_several_ids', earlier.severalIds);
+      store.saveJobs(earlier.learnt);
       const requests = client.requestCount - requestsBefore;
 
-      // What AroFlo pushed is kept where its own list is silent — the list
-      // can lag a moment behind the push — unless it now shows the job open
-      // again. A pushed completion for a job that is neither booked today
-      // nor on AroFlo's list stays unconfirmed (see view.js).
+      // Kept from before, where this read is silent and nothing says the job
+      // has gone back to being open:
+      //   - what AroFlo pushed (its own list can lag a moment behind);
+      //   - "ready for invoicing" seen on an earlier update of this day —
+      //     a substatus has no date, so a day gone by can't be told it again.
+      // A pushed completion for a job neither booked that day nor on
+      // AroFlo's list stays unconfirmed (see view.js).
       const previous = store.getDay(day);
       const booked = new Set(read.bookings.map((b) => b.taskId));
       const completed = { ...read.completed };
       for (const [taskId, done] of Object.entries(previous.completed)) {
-        if (done.source !== 'webhook' || completed[taskId] || read.openAgain.includes(taskId)) continue;
-        completed[taskId] = { ...done, unverified: !booked.has(taskId) };
+        if (completed[taskId] || read.openAgain.includes(taskId)) continue;
+        if (done.source === 'webhook') completed[taskId] = { ...done, unverified: !booked.has(taskId) };
+        else if (done.how === 'invoicing' && day !== today() && stillDone(read.jobs[taskId])) completed[taskId] = done;
       }
       store.saveDay({
         day,
         bookingsFetchedAt: new Date().toISOString(),
         requests,
-        notes: read.notes,
+        notes: [...read.notes, ...earlier.notes],
         businessUnits: read.businessUnits,
         bookings: read.bookings,
+        notCounted: read.notCounted,
         completed,
         jobs: { ...previous.jobs, ...read.jobs },
         calendarChangedAt: null,
       });
-      logger.info('Workload check', { ...read.check, requests });
+      logger.info('Workload check', { ...read.check, earlierDays: earlier.check, requests });
       if (client.dailyAllowance) logger.info('AroFlo requests left today', { ...client.dailyAllowance, usedByThisWorkloadUpdate: requests });
     } catch (err) {
       state.lastError = { day, message: err.message };
@@ -142,6 +181,22 @@ function createWorkload({ client, cache, db, settings, logger }) {
     } finally {
       state.updating = null;
     }
+  }
+
+  // The first time the page is opened on a new day, that day is read by
+  // itself (2026-10-15: Jodi chose this — "no need to update now when the
+  // dash is open since the webhooks are triggering the change"). AroFlo's
+  // messages bring completions but not the calendar, so the calendar has to
+  // be read once a day; this does it when someone first looks, never on a
+  // timer. Today only; once per day while the server runs, so an update that
+  // fails isn't retried on every open; and never past the usual guards
+  // (one update at a time, the gap between them, the daily allowance).
+  const triedToday = new Set();
+  function loadIfNew(day) {
+    if (day !== today() || triedToday.has(day) || store.getDay(day).bookingsFetchedAt || refusal()) return false;
+    triedToday.add(day);
+    update(day); // marks itself as running at once, and catches its own errors
+    return true;
   }
 
   // An Event Message from AroFlo. `kind` is the last part of the address it
@@ -175,10 +230,24 @@ function createWorkload({ client, cache, db, settings, logger }) {
       stored.completed[taskId] = { at: asAroFlo(when), by: clean(payload.currentuser), source: 'webhook', unverified: !booked && !loaded && !onRecord };
       if (!stored.jobs[taskId]) {
         stored.jobs[taskId] = loaded
-          ? { jobNumber: loaded.jobNumber, taskName: loaded.taskName, client: loaded.client, site: loaded.locationName || '', priority: loaded.priorityLabel || '', status: loaded.status }
-          : onRecord || { jobNumber: clean(payload.jobnumber), taskName: clean(payload.task), client: '', site: '', priority: '', status: '' };
+          ? { jobNumber: loaded.jobNumber, customerOrderNumber: loaded.customerOrderNumber || '', taskName: loaded.taskName, client: loaded.client, site: loaded.locationName || '', priority: loaded.priorityLabel || '', status: loaded.status }
+          : onRecord || { jobNumber: clean(payload.jobnumber), customerOrderNumber: clean(payload.custon), taskName: clean(payload.task), client: '', site: '', priority: '', status: '' };
       }
       store.saveDay(stored);
+      // And on the job's own record, which the "Not done yet" tab goes by.
+      if (recorded) store.saveJobs({ [taskId]: { ...recorded, status: 'Completed', completedDate: asAroFlo(when).slice(0, 10), completedAt: asAroFlo(when) } });
+      // What became of it, so the log answers "did it show?" (job numbers aren't secret).
+      logger.info('Event message applied', {
+        kind,
+        day: dayOf(when),
+        job: clean(payload.jobnumber) || (recorded && recorded.jobNumber) || '',
+        onThatDaysCalendar: booked,
+        knownJob: Boolean(loaded || onRecord),
+        // Not yet matched to anything of ours: kept, shown once an update confirms it.
+        heldBack: stored.completed[taskId].unverified,
+        // The page shows the day once someone has pressed Update now for it.
+        dayLoaded: Boolean(stored.bookingsFetchedAt),
+      });
       return { applied: 'completed' };
     }
 
@@ -196,7 +265,7 @@ function createWorkload({ client, cache, db, settings, logger }) {
     return { applied: null };
   }
 
-  return { view, update, refusal, receive, today, store };
+  return { view, update, loadIfNew, refusal, receive, today, store };
 }
 
 module.exports = { createWorkload, instantOf };

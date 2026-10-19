@@ -120,31 +120,74 @@ nothing in the reports; the CSV is the one that follows what is showing.
 
 ## Workloads
 
-A fourth page: the jobs booked to each field worker on a day, and how many of
-them are done. Built on 14 October 2026. The first run against the TTS
-account that day confirmed the bookings and the completions (74 bookings to
-19 people; AroFlo took both date filters). Reading the booked jobs' details
-several to a request was added after it and **has not yet been seen to work
-on the real account** — every update writes what AroFlo sent to the log
-(`Workload check`: counts and field names), which is where to look.
+A fourth page: what is scheduled to each field worker, what they have
+finished, and what is still waiting. Built and deployed on 14 October 2026,
+after runs against the TTS account confirmed it; reworked on 15 October 2026
+("the logic is simple. take all that is scheduled today and then log all
+that is finished … add another tab to show all scheduled to that person that
+they have not done yet from today backwards"). Every update writes what
+AroFlo sent to the log (`Workload check`: counts and field names).
 
-- **Booked** — the job is in AroFlo's calendar for that worker on that day
-  (the Schedules zone). Booked to two people, it counts for each; booked to
-  one person twice in a day, once. Leave, meetings and bookings of equipment
-  are not jobs and are not counted.
-- **Completed** — marked Completed in AroFlo *on that day*. A job booked on
-  Monday and finished on Tuesday is ongoing on Monday's page and completed on
-  Tuesday's (confirmed 14 October 2026). One finished on a day it was not
-  booked is listed apart, with who last had it.
-- **It reads AroFlo only on "Update now"**: two requests — that day's
-  bookings, and the jobs completed since the day began. A booking names its
-  job only by id, so the first time a job turns up its number, client, site
-  and priority are read as well (25 jobs to a request) and kept on disk;
-  after that it is never asked for again. So a day's first update costs a
-  handful of requests and later ones two. It is separate from Refresh (49
-  requests), does not need Refresh to have been pressed, and like it never
-  runs on a timer. Opening the page, changing the day and the page's own
-  refreshing every few seconds ask only this app's server.
+Two tabs:
+
+- **Scheduled** — the jobs on each worker's calendar for the day, and which
+  of them are done. Beside that, how many jobs carried over from earlier
+  days they finished that day, and **Finished in all** (the two together).
+- **Not done yet** — every job scheduled to someone in the 30 days up to and
+  including the day (`WORKLOAD_BACKLOG_DAYS`) that isn't finished, and the
+  ones carried over from earlier days that were finished on the day. Each
+  job is on the list of whoever it was **most recently** scheduled to, so a
+  job moved from one person to another is the second person's. It shows
+  which days it was scheduled to them and how many days it has waited.
+
+Rules:
+
+- **Whose a job is comes from the calendar only** (the Schedules zone).
+  Labour logged on a job is shown beside it but never decides whose it is.
+- **A job scheduled to two people** counts, and is listed, for each of them.
+  Scheduled to one person twice in a day, it counts once.
+- **Hidden bookings count only on a finished job.** AroFlo hides a job's
+  bookings once the job is finished (seen on the TTS account, 15 October
+  2026: every booking of a finished job read back hidden, none still shown
+  had a finished job, and two went from shown to hidden the morning they
+  were completed), so those are real work. A hidden booking on a job that is
+  still open is the office following up with the tradie ("dont count those
+  tagged as hidden as they are not actual jobs", 15 October 2026): not
+  counted, and listed at the foot of the page with leave and equipment.
+- **Done** — marked Completed in AroFlo *on that day*. A job booked on Monday
+  and finished on Tuesday is still to do on Monday's page (confirmed 14
+  October 2026). Also counted as done: a job whose substatus is **Ready for
+  Invoicing** ("the invoiced status counts as completed too" — a substatus
+  has no date, so this is judged as of each update), and a job finished on
+  an earlier day that is still on the calendar ("Completed earlier").
+- A job finished on the day that was on nobody's calendar in those 30 days
+  is listed apart ("Finished today, on nobody's calendar").
+
+The Worker picker and each table's column filters narrow that tab's tiles
+and table by worker too, and say so. The Show buttons over each table only
+pick what is listed.
+
+- **It reads AroFlo when the page is first opened each day, and on "Update
+  now"** (15 October 2026: "no need to update now when the dash is open since
+  the webhooks are triggering the change"). AroFlo's messages bring
+  completions but not the calendar, so the day's calendar is read once, the
+  first time anyone opens the page that day — today only, never on a timer,
+  and not retried on every open if it fails. After that, completions arrive
+  by themselves; Update now picks up calendar changes. Each read takes the day's calendar, every job on
+  it as it stands now (25 jobs to a request, with its substatus only: with
+  labour joined too, 25 jobs took longer than AroFlo's 30 seconds), the
+  jobs completed since the
+  day began, and for Not done yet the calendars of the earlier days and the
+  jobs on them that aren't known to be finished. An earlier day's calendar
+  is read once, on a later day, and kept (`workload_schedule_days`); a job
+  known to be finished isn't read again. So the first update reads about a
+  month of calendars (60-odd requests against the mock, about one Refresh)
+  and later ones about ten to fifteen. Bookings running into the day from
+  earlier days are asked for too, until AroFlo is seen not applying that
+  filter (as on the TTS account). It is separate from Refresh, does not need
+  Refresh to have been pressed, and never runs on a timer. Opening the page,
+  changing the day and the page's own refreshing every few seconds ask only
+  this app's server.
 - **Live in between, when AroFlo is set to push.** AroFlo's Event Messages
   (Site Administration > Settings > General) can POST to this app when a
   job is completed or the calendar changes, which costs no requests:
@@ -153,14 +196,15 @@ on the real account** — every update writes what AroFlo sent to the log
   shown at once; a calendar change is flagged on the page ("press Update
   now") rather than fetched. With no secret set those addresses answer 404.
   AroFlo can only reach the deployed site, not a copy on a PC.
-- **TTS RMS only.** By the booking's own business unit: the TTS account's
-  bookings each carry one (on the first run, 13 of 74 were ttsBuilt's and
-  were left out). Were a booking ever to arrive without one, its job's unit
-  is used instead, and a booking that still can't be told either way is
-  kept and counted in a note on the page.
-- **Kept on disk** in the app database: a row a day (`workload_days`), so a
-  restart doesn't lose the day and past days can be looked back at, and a
-  row a job (`workload_jobs`) for the details read above.
+- **TTS RMS only — by the job's own business unit.** A booking names a
+  unit too, but it can be the unit of whoever made the booking rather than
+  of the work, so it is used only when the job can't be read. A booking that
+  still can't be told either way is kept. Other units' work is not shown or
+  mentioned on the page (14 October 2026); the log counts what was left out
+  and how often the two units disagree (`bookingUnitDiffersFromJob`).
+- **Kept on disk** in the app database: a row a day (`workload_days`), a row
+  a day's calendar (`workload_schedule_days`), and a row a job
+  (`workload_jobs`: its details, status and when it was finished).
 
 The code is `src/workload/` and `frontend/src/workload/`; `npm test` covers
 the counting rules, the business-unit limit and the messages from AroFlo.
@@ -444,7 +488,12 @@ Environment variables → App settings**:
 | `ADMIN_USERNAME` | the admin's sign-in name |
 | `ADMIN_PASSWORD` | 12 characters or more — not the local one |
 
-The app does not start until they are there, and the script says so
+One more is optional: `WORKLOAD_WEBHOOK_SECRET`, a long random value that
+switches on the Workloads page's receiver for AroFlo's Event Messages (see
+Workloads). The app starts without it; the receiver answers 404 until it is
+set. On the live site it was set on 15 October 2026.
+
+The app does not start until the six are there, and the script says so
 instead of waiting for it. Pressing **Apply** in the portal restarts the
 app with them. Later deploys are the same command; once the six are in
 place it waits for `/healthz` as usual.

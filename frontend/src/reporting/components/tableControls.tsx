@@ -48,9 +48,12 @@ export interface TableControls<R> {
   // A filter is on (sorting alone doesn't hide anything).
   filtered: boolean;
   choices: (key: string) => string[];
+  // The rows every filter but one leaves, unsorted — to count, beside that
+  // filter, what each of its choices would show.
+  rowsExcept: (key: string) => R[];
 }
 
-function matches<R>(column: ControlColumn<R>, row: R, wanted: string): boolean {
+export function matches<R>(column: ControlColumn<R>, row: R, wanted: string): boolean {
   if (column.filter === 'choice') return wanted === BLANK ? !column.text(row).trim() : column.text(row) === wanted;
   if (column.filter === 'number') {
     const least = Number(wanted);
@@ -105,9 +108,13 @@ export function useTableControls<R>(rows: R[], columns: ControlColumn<R>[]): Tab
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options]);
 
+  const filterBy = (skip: string | null) => {
+    const on = columns.filter((c) => c.key !== skip && (filters[c.key] || '').trim() && c.filter !== 'none');
+    return on.length ? rows.filter((r) => on.every((c) => matches(c, r, filters[c.key]))) : rows;
+  };
+
   const shown = useMemo(() => {
-    const on = columns.filter((c) => (filters[c.key] || '').trim() && c.filter !== 'none');
-    const kept = on.length ? rows.filter((r) => on.every((c) => matches(c, r, filters[c.key]))) : rows;
+    const kept = filterBy(null);
     const by = sort && columns.find((c) => c.key === sort.key);
     if (!sort || !by) return kept;
     const value = (r: R) => (by.sortValue ? by.sortValue(r) : by.text(r));
@@ -128,6 +135,7 @@ export function useTableControls<R>(rows: R[], columns: ControlColumn<R>[]): Tab
     clear: () => setFilters({}),
     filtered: Object.values(filters).some((v) => v.trim()),
     choices: (key) => options[key] || [],
+    rowsExcept: (key) => filterBy(key),
   };
 }
 

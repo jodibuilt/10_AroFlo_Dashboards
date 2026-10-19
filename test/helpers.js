@@ -12,6 +12,8 @@ Object.assign(process.env, {
   KPI_SUBMITTED_INVOICE_STATUSES: '',
   KPI_INVOICE_STATUS_ORDER: '',
   AROFLO_BUSINESS_UNITS: '',
+  // The Workloads page's "Not done yet" looks back three days in the tests.
+  WORKLOAD_BACKLOG_DAYS: '3',
   REPORT_LOOKBACK_MONTHS: '2',
   // Small pages and no pauses, so the AroFlo tests are quick.
   PAGE_SIZE: '5',
