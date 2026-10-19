@@ -57,6 +57,8 @@ function createWorkload({ client, cache, db, settings, logger }) {
         error: state.lastError && state.lastError.day === day ? state.lastError.message : null,
         // AroFlo can push changes here; without it the page only moves on "Update now".
         pushEnabled: Boolean(config.workload.webhookSecret),
+        // Today is read by itself this often (startAutoUpdate); 0 = never.
+        autoUpdateMinutes: config.workload.autoUpdateMinutes,
       },
     };
   }
@@ -69,7 +71,7 @@ function createWorkload({ client, cache, db, settings, logger }) {
       return { status: 429, message: `Please wait ${Math.ceil(config.workload.minUpdateIntervalSeconds - waited)}s before updating again.` };
     }
     if (cache.allowanceIsLow()) {
-      const { remaining, limit } = client.dailyAllowance;
+      const { remaining = '?', limit = '?' } = client.dailyAllowance || {};
       return { status: 429, message: `AroFlo's daily request allowance is nearly used up (${remaining} of ${limit} left), so updating is paused until it resets.` };
     }
     return null;
@@ -199,6 +201,37 @@ function createWorkload({ client, cache, db, settings, logger }) {
     return true;
   }
 
+  // Every so often (config.workload.autoUpdateMinutes), today is read by
+  // itself, as if someone had pressed "Update now" — which, with AroFlo's
+  // webhooks switched off (2026-10-19), is how completions reach the page
+  // between presses. A turn is skipped, not queued, when the usual guards say
+  // no: an update running, the gap since the last one, the daily allowance.
+  // Each read is ten to fifteen requests from the shared allowance.
+  let autoTimer = null;
+  function startAutoUpdate(minutes = config.workload.autoUpdateMinutes) {
+    if (!minutes || autoTimer) return false;
+    autoTimer = setInterval(() => {
+      // Nothing thrown here may escape: in a timer it would stop the server.
+      try {
+        const day = today();
+        const refused = refusal();
+        if (refused) {
+          logger.info('Workload auto-update skipped', { day, reason: refused.message });
+          return;
+        }
+        update(day); // catches and records its own errors
+      } catch (err) {
+        logger.error('Workload auto-update failed to start', { error: err.message });
+      }
+    }, minutes * 60 * 1000);
+    autoTimer.unref();
+    return true;
+  }
+  function stopAutoUpdate() {
+    clearInterval(autoTimer);
+    autoTimer = null;
+  }
+
   // An Event Message from AroFlo. `kind` is the last part of the address it
   // was sent to: "task-completed" or "schedule-changed". What arrives is
   // logged by its shape (field names, not values) whatever it is, because
@@ -265,7 +298,7 @@ function createWorkload({ client, cache, db, settings, logger }) {
     return { applied: null };
   }
 
-  return { view, update, loadIfNew, refusal, receive, today, store };
+  return { view, update, loadIfNew, refusal, receive, startAutoUpdate, stopAutoUpdate, today, store };
 }
 
 module.exports = { createWorkload, instantOf };

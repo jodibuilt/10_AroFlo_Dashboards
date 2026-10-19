@@ -154,6 +154,8 @@ export interface WorkloadResponse {
     error: string | null;
     // AroFlo is set up to push changes here as they happen.
     pushEnabled: boolean;
+    // Today is read from AroFlo by itself this often, in minutes; 0 = never.
+    autoUpdateMinutes: number;
   };
 }
 

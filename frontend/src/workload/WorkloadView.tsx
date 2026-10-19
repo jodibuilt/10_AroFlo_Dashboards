@@ -66,12 +66,14 @@ function stateLabel(job: WorkloadJob, when: When): string {
 const finishedText = (j: WorkloadJob) => (j.doneHow === 'earlier' ? formatDay(j.completedAt) : clock(j.completedAt));
 const statusText = (j: { status: string; substatus: string; unread?: boolean }) => (j.unread ? 'Not read from AroFlo yet' : [j.status, j.substatus].filter(Boolean).join(' · '));
 const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+// The customer's order number; a job without one shows its job number, said to be one.
+const jobRef = (j: { customerOrderNumber: string; jobNumber: string }) => j.customerOrderNumber || (j.jobNumber ? `${j.jobNumber} (job no.)` : '');
 const share = (done: number, of: number) => (of > 0 ? Math.round((done / of) * 100) : 0);
 
 function scheduledColumns(when: When): ControlColumn<WorkloadJob>[] {
   return [
     { key: 'worker', label: 'Worker', filter: 'choice', text: (j) => j.worker },
-    { key: 'job', label: 'Customer order no.', text: (j) => j.customerOrderNumber },
+    { key: 'job', label: 'Customer order no.', text: jobRef },
     { key: 'task', label: 'Task', text: (j) => j.taskName },
     { key: 'client', label: 'Client', filter: 'choice', text: (j) => j.client },
     { key: 'site', label: 'Site', text: (j) => j.site },
@@ -95,7 +97,7 @@ function backlogColumns(day: string, when: When): ControlColumn<WorkloadBacklogJ
   const finished = when === 'today' ? 'Finished today' : 'Finished that day';
   return [
     { key: 'worker', label: 'Worker', filter: 'choice', text: (j) => j.worker },
-    { key: 'job', label: 'Customer order no.', text: (j) => j.customerOrderNumber },
+    { key: 'job', label: 'Customer order no.', text: jobRef },
     { key: 'task', label: 'Task', text: (j) => j.taskName },
     { key: 'client', label: 'Client', filter: 'choice', text: (j) => j.client },
     { key: 'site', label: 'Site', text: (j) => j.site },
@@ -110,14 +112,14 @@ function backlogColumns(day: string, when: When): ControlColumn<WorkloadBacklogJ
 
 const NOT_COUNTED_COLUMNS: ControlColumn<WorkloadNotCounted>[] = [
   { key: 'worker', label: 'Worker', filter: 'choice', text: (j) => j.worker },
-  { key: 'job', label: 'Customer order no.', text: (j) => j.customerOrderNumber },
+  { key: 'job', label: 'Customer order no.', text: jobRef },
   { key: 'task', label: 'Booked for', text: (j) => j.taskName },
   { key: 'booked', label: 'Booked', filter: 'none', text: (j) => [clock(j.start), clock(j.end)].filter(Boolean).join(' – '), sortValue: (j) => j.start },
   { key: 'why', label: 'Why it is not counted', filter: 'choice', text: (j) => j.reason },
 ];
 
 const UNBOOKED_COLUMNS: ControlColumn<WorkloadUnbooked>[] = [
-  { key: 'job', label: 'Customer order no.', text: (j) => j.customerOrderNumber },
+  { key: 'job', label: 'Customer order no.', text: jobRef },
   { key: 'task', label: 'Task', text: (j) => j.taskName },
   { key: 'client', label: 'Client', filter: 'choice', text: (j) => j.client },
   { key: 'site', label: 'Site', text: (j) => j.site },
@@ -492,7 +494,9 @@ export const WorkloadView: React.FC<Props> = ({ themeMode }) => {
             )}
             <div style={{ color: palette.inkMuted }}>
               {meta?.pushEnabled ? 'Completions arrive from AroFlo as they happen. ' : 'Completions are as of the time above. '}
-              The calendar is read from AroFlo when the page is first opened each day; press Update now to pick up changes to it since.
+              {meta?.autoUpdateMinutes
+                ? `Today is read from AroFlo every ${meta.autoUpdateMinutes} minutes by itself; press Update now to read it sooner.`
+                : 'The calendar is read from AroFlo when the page is first opened each day; press Update now to pick up changes to it since.'}
             </div>
             {meta?.calendarChangedAt && (
               <div style={{ color: palette.statusWarningText }}>

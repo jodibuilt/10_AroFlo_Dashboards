@@ -46,10 +46,21 @@ const config = {
     // Shortest gap between presses of "Update now", across all users. Each
     // one spends two or three requests from the shared daily allowance.
     minUpdateIntervalSeconds: Number(process.env.WORKLOAD_MIN_UPDATE_INTERVAL_SECONDS || 20),
+    // Today is read from AroFlo by itself this often, in minutes, whether or
+    // not anyone has the page open (2026-10-19, Jodi: "lets just check every
+    // 30 minutes", once AroFlo's webhooks were switched off). 0 = never; the
+    // page then moves only on "Update now" and the first open of the day.
+    autoUpdateMinutes: Math.max(0, Number(process.env.WORKLOAD_AUTO_UPDATE_MINUTES ?? 30) || 0),
     // How many days back the "Not done yet" tab looks for jobs scheduled to
     // someone and not finished. Each day's calendar is read once (one
     // request) and kept.
     backlogDays: Math.max(1, Math.min(90, Number(process.env.WORKLOAD_BACKLOG_DAYS || 30))),
+    // Clients that are our own company: a job raised against one of them is
+    // internal (time booked to "APY - Preliminaries" and the like), not a
+    // worker's job (2026-10-19, Jodi). Matched on letters and digits only,
+    // from the start of the client's name, so "TTS Contracting" covers "TTS
+    // Contracting Services Pty Ltd".
+    internalClients: parseList(process.env.WORKLOAD_INTERNAL_CLIENTS, ['ttsRMS', 'TTS Contracting']),
   },
   rateLimitPerSecond: Number(process.env.RATE_LIMIT_PER_SECOND || 1),
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE || 60),

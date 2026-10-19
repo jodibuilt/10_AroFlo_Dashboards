@@ -56,13 +56,15 @@ let nextJob = 1000;
 // A raw Tasks-zone record, with AroFlo's own quirks: a blank date-time is a
 // single space, a date-only due is midnight. `notes` are the note texts,
 // oldest first.
-function rawTask({ client = 'Ventia', priority = 'id-p3', status = 'In Progress', substatus = '', notes = [], requested = day(-3), due = null, completed = null, started = null, job, businessUnit } = {}) {
+function rawTask({ client = 'Ventia', priority = 'id-p3', status = 'In Progress', substatus = '', notes = [], requested = day(-3), due = null, completed = null, started = null, job, businessUnit, custon } = {}) {
   const n = job ?? nextJob++;
   return {
     // The business unit that owns the job, when the test cares whose it is.
     ...(businessUnit ? { org: { orgid: `id of ${businessUnit}`, orgname: businessUnit } } : {}),
     taskid: `internal-${n}==`,
     jobnumber: String(n),
+    // The customer's order number: every real job the Workloads page counts has one.
+    custon: custon ?? `PO-${n}`,
     taskname: `Job ${n}`,
     status,
     substatus: { substatusid: '', substatus },

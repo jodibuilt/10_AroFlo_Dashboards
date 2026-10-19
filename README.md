@@ -184,11 +184,20 @@ pick what is listed.
   month of calendars (60-odd requests against the mock, about one Refresh)
   and later ones about ten to fifteen. Bookings running into the day from
   earlier days are asked for too, until AroFlo is seen not applying that
-  filter (as on the TTS account). It is separate from Refresh, does not need
-  Refresh to have been pressed, and never runs on a timer. Opening the page,
+  filter (as on the TTS account). It is separate from Refresh and does not
+  need Refresh to have been pressed. **Every 30 minutes** (`WORKLOAD_AUTO_UPDATE_MINUTES`,
+  0 = never) the server reads today by itself, whether or not anyone has the
+  page open — about 500–700 requests a day of the shared 2,000 — skipping a
+  turn when an update is running or the allowance is low. Opening the page,
   changing the day and the page's own refreshing every few seconds ask only
   this app's server.
-- **Live in between, when AroFlo is set to push.** AroFlo's Event Messages
+- **Push from AroFlo — switched off since 19 October 2026.** AroFlo emails
+  people (the BU managers, on the TTS account) whenever it can't deliver an
+  Event Message, so five hours of downtime that day sent a stream of failure
+  emails. The webhooks were removed in AroFlo and `WORKLOAD_WEBHOOK_SECRET`
+  taken off the live site; the 30-minute read above replaces them. Don't
+  switch them back on without settling who AroFlo emails. How it worked:
+  AroFlo's Event Messages
   (Site Administration > Settings > General) can POST to this app when a
   job is completed or the calendar changes, which costs no requests:
   `/webhooks/aroflo/task-completed` and `/webhooks/aroflo/schedule-changed`,
@@ -491,7 +500,8 @@ Environment variables → App settings**:
 One more is optional: `WORKLOAD_WEBHOOK_SECRET`, a long random value that
 switches on the Workloads page's receiver for AroFlo's Event Messages (see
 Workloads). The app starts without it; the receiver answers 404 until it is
-set. On the live site it was set on 15 October 2026.
+set. On the live site it was set on 15 October 2026 and removed on 19
+October 2026 — leave it unset (Workloads: push from AroFlo).
 
 The app does not start until the six are there, and the script says so
 instead of waiting for it. Pressing **Apply** in the portal restarts the

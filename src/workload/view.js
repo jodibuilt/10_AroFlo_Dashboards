@@ -8,6 +8,8 @@
 //   - a booking hidden on the calendar counts when its job is finished
 //     (AroFlo hides a finished job's bookings) and not when the job is
 //     still open (a follow-up with the tradie) — see HIDDEN_REASON in read.js;
+//   - only an actual job with a job number counts, and not one raised
+//     against our own company (whyNotAJob) — those are listed apart, with why;
 //   - a job scheduled to two people counts, and is listed, for each;
 //   - it is done on the day it is actually finished — so a job booked on
 //     Monday and finished on Tuesday is still to do on Monday's page;
@@ -24,6 +26,27 @@
 const config = require('../config');
 const { plain, EVERY_UNIT } = require('../businessUnit');
 const { doneBy, isFinished, isForInvoicing, shiftDay, HIDDEN_REASON } = require('./read');
+
+// Why a job booked to someone isn't one of their jobs, or '' if it is
+// (2026-10-19, Jodi): only an actual job with a job number counts, and not
+// one raised against our own company — that is internal. A customer order
+// number is not needed: a real job can lack one ("this is an actual job"),
+// and the page then shows its job number instead. `records` is what is on
+// record about the job, from wherever it was learnt. A job AroFlo hasn't
+// told us about yet (not read — "too many requests", say) is left as it
+// was: counted, shown by name.
+const NO_JOB_NUMBER = 'No job number';
+const INTERNAL = 'Internal job — the client is our own company';
+
+function whyNotAJob(records, internalClients = config.workload.internalClients) {
+  const known = records.filter((r) => r && !r.unread);
+  if (!known.length) return '';
+  const first = (key) => (known.find((r) => r[key]) || {})[key] || '';
+  if (!first('jobNumber')) return NO_JOB_NUMBER;
+  const client = plain(first('client'));
+  if (client && internalClients.some((name) => plain(name) && client.startsWith(plain(name)))) return INTERNAL;
+  return '';
+}
 
 // One line per worker per job: a job booked to one person twice in a day
 // (morning and afternoon) is one job for them, with the hours added up; a
@@ -93,16 +116,24 @@ function buildWorkloadDay(store, day, { today, backlogDays = config.workload.bac
     return doneOnRecord.has(taskId);
   };
   const counts = (b) => !b.hidden || finishedNow(b.taskId);
+  // Internal, or without a job number (whyNotAJob).
+  const whyNot = (taskId) => whyNotAJob([stored.jobs[taskId], records.get(taskId)]);
+  // The day's own record first; the customer order number from wherever it is known.
+  const recordOf = (taskId) => {
+    const job = stored.jobs[taskId] || records.get(taskId);
+    if (!job || job.customerOrderNumber) return job;
+    return { ...job, customerOrderNumber: (records.get(taskId) || {}).customerOrderNumber || '' };
+  };
 
   // ---------- scheduled that day ----------
   // (A day stored before the hidden rule holds hidden follow-ups among its bookings: left out here too.)
-  const scheduled = stored.bookings.filter(counts);
+  const scheduled = stored.bookings.filter((b) => counts(b) && !whyNot(b.taskId));
   const jobs = linesOf(scheduled)
     .map((line) => {
       const done = stored.completed[line.taskId];
       return {
         worker: line.worker,
-        ...describe(stored.jobs[line.taskId] || records.get(line.taskId), line.taskName),
+        ...describe(recordOf(line.taskId), line.taskName),
         start: line.startAt || '',
         end: line.endAt || '',
         hours: round2(line.hours),
@@ -130,7 +161,7 @@ function buildWorkloadDay(store, day, { today, backlogDays = config.workload.bac
   const backlogJobs = [];
   for (const [taskId, { taskName, days }] of byTask) {
     const job = jobOf(taskId);
-    if (!ours(job)) continue;
+    if (!ours(job) || whyNot(taskId)) continue;
     const scheduledOn = [...days.keys()].sort();
     const last = scheduledOn[scheduledOn.length - 1];
     const carried = scheduledOn[0] < day;
@@ -200,12 +231,16 @@ function buildWorkloadDay(store, day, { today, backlogDays = config.workload.bac
   // booking or to AroFlo's own list is held back: nothing says whose
   // business unit it belongs to.
   const notBooked = Object.entries(stored.completed)
-    .filter(([taskId, done]) => !byTask.has(taskId) && !done.unverified)
+    .filter(([taskId, done]) => !byTask.has(taskId) && !done.unverified && !whyNot(taskId))
     .map(([taskId, done]) => ({ ...describe(stored.jobs[taskId]), completedAt: done.at, completedBy: done.by || '' }))
     .sort((a, b) => String(a.completedAt).localeCompare(String(b.completedAt)));
 
   // On the calendar that day and not counted, each with why.
-  const notCounted = [...(stored.notCounted || []), ...stored.bookings.filter((b) => !counts(b)).map((b) => ({ ...b, reason: HIDDEN_REASON }))]
+  const notCounted = [
+    ...(stored.notCounted || []),
+    ...stored.bookings.filter((b) => !counts(b)).map((b) => ({ ...b, reason: HIDDEN_REASON })),
+    ...stored.bookings.filter((b) => counts(b) && whyNot(b.taskId)).map((b) => ({ ...b, reason: whyNot(b.taskId) })),
+  ]
     .map((b) => ({ worker: b.worker, jobNumber: b.jobNumber || (jobOf(b.taskId) || {}).jobNumber || '', customerOrderNumber: b.customerOrderNumber || (jobOf(b.taskId) || {}).customerOrderNumber || '', taskName: b.taskName, start: b.startAt || '', end: b.endAt || '', reason: b.reason }))
     .sort((a, b) => byName(a.worker, b.worker) || a.start.localeCompare(b.start));
 
@@ -253,4 +288,4 @@ function buildWorkloadDay(store, day, { today, backlogDays = config.workload.bac
   };
 }
 
-module.exports = { buildWorkloadDay, linesOf };
+module.exports = { buildWorkloadDay, linesOf, whyNotAJob, NO_JOB_NUMBER, INTERNAL };

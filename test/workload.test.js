@@ -57,7 +57,12 @@ const row = (worker, fields = {}) => ({ worker, booked: 0, done: 0, open: 0, hou
 const jobNo = (id) => id.replace(/internal-|==/g, '');
 
 const memoryStore = () => openWorkloadStore(new DatabaseSync(':memory:'));
-const stored = (store, dayIso, fields) => store.saveDay({ ...emptyDay(dayIso), bookingsFetchedAt: new Date().toISOString(), ...fields });
+// A day as an update stores it. Each booked job has a number and a customer
+// order number unless the test says otherwise in `jobs`.
+const stored = (store, dayIso, fields) => {
+  const known = Object.fromEntries((fields.bookings || []).map((b) => [b.taskId, { jobNumber: jobNo(b.taskId), customerOrderNumber: `PO-${jobNo(b.taskId)}`, taskName: b.taskName }]));
+  return store.saveDay({ ...emptyDay(dayIso), bookingsFetchedAt: new Date().toISOString(), ...fields, jobs: { ...known, ...fields.jobs } });
+};
 const booked = (worker, job, extra = {}) => ({ scheduleId: `s-${worker}-${job}-${extra.startAt || ''}`, workerId: `id-${worker}`, worker, taskId: taskId(job), taskName: `Job ${job}`, startAt: '', endAt: '', hours: 0, ...extra });
 
 // The app's key/value settings, in memory.
@@ -94,6 +99,37 @@ test('a job is a worker’s on the day it is scheduled, and done on the day it i
   assert.deepEqual(tue.backlog.jobs.map((j) => [j.worker, j.jobNumber, j.state, j.firstScheduled, j.completedAt]), [['Sam', '1', 'finished', monday, `${day(0)} 09:10:00`]]);
   assert.deepEqual(tue.notBooked, []);
   assert.deepEqual(tue.totals, { workers: 1, booked: 1, done: 1, open: 0, notDone: 0, notDoneOnDay: 0, notDoneEarlier: 0, finishedFromEarlier: 1, finishedInAll: 2, finishedNotBooked: 0, notCounted: 0 });
+});
+
+test('only an actual job with a job number counts, with or without a customer order number, and not one raised against our own company', () => {
+  const store = memoryStore();
+  stored(store, iso(0), {
+    bookings: [booked('Sam', 1), booked('Elias', 2), booked('Ray', 3), booked('Ray', 4), booked('Kim', 5), booked('Lee', 6), booked('Pat', 7)],
+    completed: { [taskId(8)]: { at: `${day(0)} 10:00:00`, how: 'completed', by: '', source: 'aroflo' } },
+    jobs: {
+      // Time booked to an internal job, as Elias's "APY - Preliminaries" (2026-10-19).
+      [taskId(2)]: { jobNumber: '2', customerOrderNumber: '', taskName: 'APY - Preliminaries', client: 'ttsRMS' },
+      [taskId(3)]: { jobNumber: '3', customerOrderNumber: 'PO-3', taskName: 'Labour - Carpentry', client: 'TTS Contracting Services Pty Ltd' },
+      // A real job without a customer order number, as 16573 "315A Umuwa - Front Door Handle": counted.
+      [taskId(4)]: { jobNumber: '4', customerOrderNumber: '', taskName: 'Job 4', client: 'Anangu Pitjantjatjara Yankunytjatjara' },
+      // Not read from AroFlo (too many requests): nothing known either way, so counted by name.
+      [taskId(5)]: { jobNumber: '', customerOrderNumber: '', taskName: 'Job 5', unread: true },
+      // Kept before customer order numbers were: nothing known of it either way.
+      [taskId(6)]: { jobNumber: '6', taskName: 'Job 6', client: 'Ventia' },
+      [taskId(7)]: { jobNumber: '', customerOrderNumber: 'PO-7', taskName: 'Job 7', client: 'Ventia' },
+      // Finished unbooked, but internal: not listed as done either.
+      [taskId(8)]: { jobNumber: '8', customerOrderNumber: 'PO-8', taskName: 'Yard tidy', client: 'TTSRMS' },
+    },
+  });
+  const { data } = buildWorkloadDay(store, iso(0), { today: iso(0) });
+  assert.deepEqual(data.jobs.map((j) => [j.worker, j.jobNumber, j.customerOrderNumber]), [['Kim', '', ''], ['Lee', '6', ''], ['Ray', '4', ''], ['Sam', '1', 'PO-1']]);
+  assert.deepEqual(data.backlog.jobs.map((j) => j.worker), ['Kim', 'Lee', 'Ray', 'Sam']);
+  assert.deepEqual(data.notBooked, []);
+  assert.deepEqual(data.notCounted.map((j) => [j.worker, j.jobNumber, j.reason]), [
+    ['Elias', '2', 'Internal job — the client is our own company'],
+    ['Pat', '', 'No job number'],
+    ['Ray', '3', 'Internal job — the client is our own company'],
+  ]);
 });
 
 test('booked twice to one person is one job for them; booked to two people is a job for each; hidden counts only on a finished job', () => {
@@ -502,6 +538,29 @@ test('opening the page on a new day reads that day once, by itself; other days, 
     assert.equal(workload.loadIfNew(iso(0)), false); // read once: after that, only on Update now
     assert.equal(stand.requests.length, sent);
   } finally {
+    await stand.close();
+  }
+});
+
+test('every so often today is read by itself; a turn is skipped while the daily allowance is low', async () => {
+  const stand = await aroflo({ starting: [booking('s1', 'Sam', 501)], pool: [rawTask({ job: 501, businessUnit: 'TTS RMS' })] });
+  let low = true;
+  const cache = { ...cacheOf(), allowanceIsLow: () => low };
+  const workload = createWorkload({ client: stand.client, cache, db: new DatabaseSync(':memory:'), settings: settingsMap(), logger: quiet });
+  const settle = async (ms) => new Promise((r) => setTimeout(r, ms));
+  try {
+    assert.equal(workload.startAutoUpdate(0), false); // 0 = never
+    assert.equal(workload.startAutoUpdate(0.001), true); // every 60 ms
+    assert.equal(workload.startAutoUpdate(0.001), false); // one timer only
+    await settle(200);
+    assert.equal(stand.requests.length, 0); // allowance low: skipped, not queued
+    low = false;
+    for (let i = 0; i < 100 && !workload.view(iso(0)).data.loaded; i++) await settle(20);
+    assert.equal(workload.view(iso(0)).data.loaded, true);
+    assert.ok(stand.requests.some((r) => r.zone === 'Schedules' && askedDay(r) === day(0))); // today's calendar was read
+  } finally {
+    workload.stopAutoUpdate();
+    for (let i = 0; i < 100 && workload.view(iso(0)).meta.updating; i++) await settle(20);
     await stand.close();
   }
 });

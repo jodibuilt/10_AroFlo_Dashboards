@@ -212,8 +212,8 @@ function workloadDay(req, res) {
   return day;
 }
 // Opening the page on a new day also reads that day, once (loadIfNew in
-// src/workload/index.js); after that it only reads AroFlo when someone
-// presses "Update now".
+// src/workload/index.js); after that AroFlo is read when someone presses
+// "Update now", and by itself every WORKLOAD_AUTO_UPDATE_MINUTES.
 app.get('/api/workload', requireApiAuth, (req, res) => {
   const day = workloadDay(req, res);
   if (!day) return;
@@ -267,12 +267,14 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(frontendDistDir, 'index.html'));
 });
 
-// Nothing is fetched from AroFlo here, or on a timer: the reports stay empty
+// The reports aren't fetched from AroFlo here or on a timer: they stay empty
 // until someone presses Refresh (POST /api/refresh above). AroFlo's daily
-// request allowance is shared with other tools, so this app only spends it
-// when asked to.
+// request allowance is shared with other tools. The one timer is the
+// Workloads page's: today's calendar and completions, every
+// WORKLOAD_AUTO_UPDATE_MINUTES (src/workload/index.js).
 app.listen(config.port, () => {
   logger.info(`AroFlo Dashboards listening on http://localhost:${config.port} — AroFlo data loads when someone presses Refresh`);
+  if (workload.startAutoUpdate()) logger.info(`Workloads: today is read from AroFlo every ${config.workload.autoUpdateMinutes} minutes`);
 });
 
 function shutdown() {

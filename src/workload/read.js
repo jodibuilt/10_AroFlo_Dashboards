@@ -429,7 +429,8 @@ async function readDay(
   const jobs = {};
   const completed = {};
   for (const b of counted) {
-    jobs[b.taskId] = detail(b.taskId) || { ...describe({}), taskName: b.taskName };
+    // Not read: nothing is known of its number either way (whyNotAJob in view.js).
+    jobs[b.taskId] = detail(b.taskId) || { ...describe({}), taskName: b.taskName, unread: true };
     const done = doneOn(now(b.taskId), aroDay, isToday);
     if (done) completed[b.taskId] = { at: done.at, how: done.how, by: '', source: 'aroflo' };
   }
